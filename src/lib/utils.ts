@@ -93,3 +93,28 @@ export function generatePrivateHtmlUrl(
   const l = cleanLessonCode(lessonCode);
   return `${PRIVATE_COURSES_PROXY}/${s}/${s}_${u}${l}.html`;
 }
+
+/**
+ * Generate fallback candidate URLs for HTML lesson discovery
+ */
+export function generatePrivateHtmlCandidates(
+  subjectCode: string,
+  unitCode: string,
+  lessonCode: string,
+  customHtmlPath?: string
+): string[] {
+  if (customHtmlPath) {
+    const cleanPath = customHtmlPath.replace(/^\/+/, '');
+    return [`${PRIVATE_COURSES_PROXY}/${cleanPath}`];
+  }
+  const s = subjectCode || 'subject';
+  const u = cleanUnitCode(unitCode);
+  const l = cleanLessonCode(lessonCode);
+  return [
+    `${PRIVATE_COURSES_PROXY}/${s}/${s}_${u}${l}.html`,
+    `${PRIVATE_COURSES_PROXY}/${s}/${s}${u}${l}.html`,
+    `${PRIVATE_COURSES_PROXY}/${s}/${u}${l}.html`,
+    `${PRIVATE_COURSES_PROXY}/${s}/index.html`,
+  ];
+}
+

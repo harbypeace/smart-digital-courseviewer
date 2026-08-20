@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { cleanUnitCode, cleanLessonCode, generatePrivateHtmlUrl, PUBLIC_R2_IMAGES } from '../lib/utils';
+import { cleanUnitCode, cleanLessonCode, generatePrivateHtmlUrl, generatePrivateHtmlCandidates, PUBLIC_R2_IMAGES } from '../lib/utils';
 import { Loader2, AlertCircle, RefreshCw, Maximize2, Minimize2, Printer } from 'lucide-react';
 
 export function HtmlLessonViewer() {
@@ -8,6 +8,7 @@ export function HtmlLessonViewer() {
   const [error, setError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showControls, setShowControls] = useState(false);
+  const [activeUrl, setActiveUrl] = useState<string>('');
 
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -21,15 +22,30 @@ export function HtmlLessonViewer() {
     const l = cleanLessonCode(params.get('lesson') || 'l1');
     const file = params.get('file') || params.get('html');
 
-    const targetUrl = generatePrivateHtmlUrl(s, u, l, file || undefined);
+    const candidates = generatePrivateHtmlCandidates(s, u, l, file || undefined);
+    let resolvedHtml: string | null = null;
+    let resolvedUrl: string = '';
+
+    for (const url of candidates) {
+      try {
+        const res = await fetch(url);
+        if (res.ok) {
+          resolvedHtml = await res.text();
+          resolvedUrl = url;
+          break;
+        }
+      } catch (_e) {}
+    }
+
+    if (!resolvedHtml) {
+      setError(`تعذر العثور على ملف الدرس HTML لمادة (${s}) - الوحدة (${u}) - الدرس (${l})`);
+      setLoading(false);
+      return;
+    }
 
     try {
-      const res = await fetch(targetUrl);
-      if (!res.ok) {
-        throw new Error(`تعذر العثور على ملف الدرس HTML (${res.status}): ${targetUrl}`);
-      }
-
-      let html = await res.text();
+      let html = resolvedHtml;
+      setActiveUrl(resolvedUrl);
       const publicBaseUrl = `${PUBLIC_R2_IMAGES}/${s}/${u}/${l}/`;
 
       // Inject base tag so all relative assets (images, css, scripts) resolve natively

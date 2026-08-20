@@ -323,12 +323,17 @@ const server = http.createServer(async (req, res) => {
 
       const s3Res = await S3_COURSES_CLIENT.fetch(s3Url, { method: req.method, headers: s3Headers });
       if (s3Res.ok || s3Res.status === 206) {
-        const headers = {};
-        for (const [k, v] of s3Res.headers.entries()) headers[k] = v;
-        headers['Content-Type'] = getMime(key);
-        headers['Accept-Ranges'] = 'bytes';
-        res.writeHead(s3Res.status, headers);
         const buf = Buffer.from(await s3Res.arrayBuffer());
+        const headers = {
+          'Access-Control-Allow-Origin': '*',
+          'Content-Type': getMime(key),
+          'Accept-Ranges': 'bytes',
+          'Content-Length': String(buf.length),
+        };
+        if (s3Res.headers.get('content-range')) {
+          headers['Content-Range'] = s3Res.headers.get('content-range');
+        }
+        res.writeHead(s3Res.status, headers);
         res.end(buf);
         return;
       }
