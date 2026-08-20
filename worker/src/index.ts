@@ -11,11 +11,15 @@
  */
 
 import { AwsClient } from 'aws4fetch';
+import { verifyJwt, extractJwtFromRequest, isCourseAuthorized, type JwtPayload } from './jwt';
 
 export interface Env {
   COURSES_IMAGES?: R2Bucket;
   COURSES?: R2Bucket;
   HARBY?: R2Bucket;
+  JWT_SECRET?: string;
+  ALLOWED_ORIGINS?: string;
+  REQUIRE_AUTH?: string;
 }
 
 const R2_ACCOUNT_ID = '656055b2b0eea86b43dd2fd4853c100f';
@@ -920,6 +924,37 @@ export default {
 
     const url = new URL(req.url);
     const p = url.pathname;
+
+    // ── JWT Authentication (Option A) ──
+    if (env.JWT_SECRET) {
+      const isPublic = p === '/' || p === '/api/health' || p.startsWith('/thumbnails/');
+      if (!isPublic) {
+        const token = extractJwtFromRequest(req);
+        if (!token) {
+          return jsonResponse({
+            status: 'error',
+            code: 'UNAUTHORIZED',
+            error: 'Authentication required. Please provide a valid signed JWT token.',
+          }, 401);
+        }
+        const verification = await verifyJwt(token, env.JWT_SECRET);
+        if (!verification.valid || !verification.payload) {
+          return jsonResponse({
+            status: 'error',
+            code: 'INVALID_TOKEN',
+            error: verification.error || 'Invalid or expired JWT token',
+          }, 401);
+        }
+        const subjectParam = url.searchParams.get('subject') || '';
+        if (subjectParam && !isCourseAuthorized(verification.payload, subjectParam)) {
+          return jsonResponse({
+            status: 'error',
+            code: 'FORBIDDEN',
+            error: `Access to course subject '${subjectParam}' is not permitted for this user account.`,
+          }, 403);
+        }
+      }
+    }
 
     // ── 1. Health & Discovery API ──────────────────────────────────────
     if (p === '/' || p === '/api/health') {
