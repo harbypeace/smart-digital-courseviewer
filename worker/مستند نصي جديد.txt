@@ -1,0 +1,570 @@
+
+
+
+Since each bucket serves a completely different type of file (HTML, Images, ZIPs), the Worker needs to act differently depending on which bucket it accesses. 
+
+Here is the detailed plan. We will route by course name (e.g., `web-design` goes to the HTML bucket, `photography` goes to the Images bucket, `coding` goes to the ZIP bucket). 
+
+The Worker will automatically apply the correct headers so HTML renders as a webpage, Images display in the browser, and ZIPs force a file download. For the images bucket, we will also add a feature to automatically generate an HTML gallery if a user visits a "unit" folder instead of a specific image.
+
+---
+
+### Phase 1: Update `wrangler.toml`
+
+Configure your bindings to clearly represent the file types.
+
+```toml
+name = "course-renderer"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+[[r2_buckets]]
+binding = "HTML_BUCKET"
+bucket_name = "your-html-courses-bucket"
+
+[[r2_buckets]]
+binding = "IMAGE_BUCKET"
+bucket_name = "your-image-courses-bucket"
+
+[[r2_buckets]]
+binding = "ZIP_BUCKET"
+bucket_name = "your-zip-courses-bucket"
+```
+
+---
+
+### Phase 2: The Worker Code (`src/index.js`)
+
+Replace your `src/index.js` with this code. It includes logic to handle the three distinct file types properly.
+
+```javascript
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    // e.g., /photography/unit1/lesson1.jpg -> ["photography", "unit1", "lesson1.jpg"]
+    const pathnameParts = url.pathname.split('/').filter(Boolean);
+
+    if (pathnameParts.length === 0) {
+      return new Response("Welcome to the Course Server. Please specify a course.", { status: 200 });
+    }
+
+    const courseName = pathnameParts[0].toLowerCase();
+    const filePath = pathnameParts.join('/');
+
+    let selectedBucket;
+    let fileType;
+
+    // 1. Route to the correct bucket based on course name
+    if (courseName.startsWith('web') || courseName.startsWith('html')) {
+      selectedBucket = env.HTML_BUCKET;
+      fileType = 'html';
+    } else if (courseName.startsWith('photo') || courseName.startsWith('image')) {
+      selectedBucket = env.IMAGE_BUCKET;
+      fileType = 'image';
+    } else if (courseName.startsWith('code') || courseName.startsWith('zip')) {
+      selectedBucket = env.ZIP_BUCKET;
+      fileType = 'zip';
+    } else {
+      return new Response("Course not recognized.", { status: 404 });
+    }
+
+    // 2. Handle Images: Check if it's a directory list or a specific file
+    if (fileType === 'image') {
+      const hasExtension = /\.[a-zA-Z0-9]+$/.test(pathnameParts[pathnameParts.length - 1]);
+      
+      // If the URL doesn't look like a file (e.g., /photography/unit1/), list the images
+      if (!hasExtension) {
+        return await renderImageGallery(selectedBucket, filePath, url.pathname);
+      }
+    }
+
+    // 3. Fetch the file from the selected R2 bucket
+    const object = await selectedBucket.get(filePath);
+
+    if (object === null) {
+      return new Response(`File not found: ${filePath}`, { status: 404 });
+    }
+
+    // 4. Prepare headers based on file type
+    const headers = new Headers();
+    object.writeHttpMetadata(headers); // Automatically gets Content-Type from R2
+    headers.set('etag', object.httpEtag);
+
+    if (fileType === 'zip') {
+      // Force the browser to download ZIP files instead of trying to render them
+      const fileName = pathnameParts[pathnameParts.length - 1];
+      headers.set('Content-Disposition', `attachment; filename="${fileName}"`);
+    } else if (fileType === 'html' || fileType === 'image') {
+      // Allow browser to render HTML and Images, and set caching
+      headers.set('Cache-Control', 'public, max-age=3600');
+    }
+
+    return new Response(object.body, { headers });
+  }
+};
+
+// Helper Function: Generate an HTML list of images for a folder
+async function renderImageGallery(bucket, prefix, currentPath) {
+  // Ensure prefix ends with a slash for R2 listing
+  const listPrefix = prefix.endsWith('/') ? prefix : prefix + '/';
+  
+  const listed = await bucket.list({ prefix: listPrefix, delimiter: '/' });
+  
+  if (listed.objects.length === 0 && listed.delimitedPrefixes.length === 0) {
+    return new Response("No images found in this lesson folder.", { status: 404 });
+  }
+
+  // Build a simple HTML page to display the images
+  let html = `<!DOCTYPE html><html><head><title>Lesson Images: ${currentPath}</title>
+  <style>body{font-family:sans-serif;display:flex;flex-wrap:wrap;gap:20px;padding:20px;}
+  img{max-width:300px;border:1px solid #ccc;border-radius:8px;}</style></head><body>
+  <h1>Images in ${currentPath}</h1>`;
+
+  // List sub-folders (Units/Lessons)
+  listed.delimitedPrefixes.forEach(p => {
+    const folderName = p.split('/').filter(Boolean).pop();
+    html += `<div><a href="${p}"><div style="width:300px;height:200px;background:#eee;display:flex;align-items:center;justify-content:center;border-radius:8px;">📁 ${folderName}</div></a></div>`;
+  });
+
+  // List actual image files
+  listed.objects.forEach(obj => {
+    if (!obj.key.endsWith('/')) {
+      const fileName = obj.key.split('/').pop();
+      // The img src points back to the Worker, which will fetch and render the single image
+      html += `<div><img src="${obj.key}" alt="${fileName}"><p>${fileName}</p></div>`;
+    }
+  });
+
+  html += `</body></html>`;
+
+  return new Response(html, { headers: { 'Content-Type': 'text/html' } });
+}
+```
+
+---
+
+### Phase 3: How the Logic Works in Practice
+
+Once deployed, your Worker will handle the three distinct buckets dynamically based on how the URL is structured.
+
+#### 1. HTML Bucket Scenario (Rendering Webpages)
+If a user visits: `https://your-worker.workers.dev/web-design/unit1/lesson1.html`
+*   The Worker sees `web-design` and routes to `HTML_BUCKET`.
+*   It fetches `web-design/unit1/lesson1.html`.
+*   It applies `Content-Type: text/html` (automatically copied by `writeHttpMetadata`).
+*   **Result:** The browser renders the HTML webpage.
+
+#### 2. Image Bucket Scenario (Rendering an Image Gallery)
+If a user visits: `https://your-worker.workers.dev/photography/unit1/`
+*   The Worker sees `photography` and routes to `IMAGE_BUCKET`.
+*   It notices the URL doesn't end in a file extension (like `.jpg`).
+*   It triggers the `renderImageGallery` helper function.
+*   The Worker queries R2's `list()` API for everything inside `photography/unit1/`.
+*   **Result:** The Worker dynamically generates an HTML webpage containing `<img>` tags for all images in that bucket folder.
+*   When the user clicks an image, the browser requests the direct file (e.g., `.../photography/unit1/image1.jpg`), and the Worker serves the raw image file with the correct `Content-Type: image/jpeg`.
+
+#### 3. ZIP Bucket Scenario (Forcing Downloads)
+If a user visits: `https://your-worker.workers.dev/coding/unit1/source-code.zip`
+*   The Worker sees `coding` and routes to `ZIP_BUCKET`.
+*   It fetches `coding/unit1/source-code.zip`.
+*   It explicitly sets the `Content-Disposition: attachment; filename="source-code.zip"` header.
+*   **Result:** Instead of trying to display gibberish binary text on the screen, the browser immediately prompts the user to **download** the ZIP file.
+
+### Phase 4: Deploy
+
+Just like before, run:
+```bash
+npx wrangler deploy
+```
+
+This setup ensures your Worker acts as a smart router, a file renderer, and an auto-gallery generator, perfectly tailored to the specific contents of each of your three R2 buckets.
+
+When moving to Vercel, you have two ways to handle the files in your R2 buckets. You are asking whether
+
+ 
+
+
+
+it is better to render them as **"source of pages"** (fetching dynamically from R2 at runtime) or as **"ready pages"** (pre-built static pages deployed directly to Vercel).
+
+Here is the breakdown of which is better for your specific setup (HTML, Images, ZIPs), and the recommended plan.
+
+### The Verdict: "Source of Pages" (Dynamic Fetching) is Better for You
+
+For your use case—where you already have files stored in Cloudflare R2 and structured as Course/Unit/Lesson—**rendering them dynamically as the "source of pages" is the better approach.**
+
+#### Why "Ready Pages" (Static Generation) is NOT ideal here:
+If you wanted "ready pages", you would have to download all the HTML, Images, and ZIPs from R2 to your computer, put them into a Vercel project folder, and run a build command (`next build`) every time you added a new lesson. 
+*   **Pros:** Extremely fast, Vercel serves the files directly from its global Edge Network.
+*   **Cons:** You have to rebuild and redeploy your Vercel project every single time a teacher uploads a new image or HTML file to R2. It defeats the purpose of having R2 as a storage bucket.
+
+#### Why "Source of Pages" (Dynamic Fetching) IS ideal:
+Vercel acts just like your Cloudflare Worker did. When a user visits `vercel.app/math101/unit1/lesson1.html`, Vercel runs a serverless function that reaches out to R2, grabs the file, and sends it back to the user.
+*   **Pros:** Files update instantly. If you upload a new image to R2, it is visible on Vercel immediately without rebuilding anything. R2 remains your single source of truth.
+*   **Cons:** Slightly slower than static files because Vercel has to fetch from R2, but you can use Vercel's caching to make it nearly as fast.
+
+---
+
+### How to implement "Source of Pages" in Vercel (Next.js)
+
+To do this in Vercel, you should use **Next.js**. Because Cloudflare R2 is S3-compatible, you can use the standard AWS S3 SDK to fetch files from your R2 buckets inside a Next.js API route or Server Component.
+
+Here is the plan to set this up in Next.js (App Router):
+
+#### Step 1: Create a Next.js Project
+```bash
+npx create-next-app@latest my-vercel-courses
+cd my-vercel-courses
+npm install @aws-sdk/client-s3 # Install AWS SDK to talk to R2
+```
+
+#### Step 2: Set up Environment Variables in Vercel
+When you deploy to Vercel, go to your Vercel Project Settings -> Environment Variables, and add your R2 credentials:
+*   `R2_ACCOUNT_ID`
+*   `R2_ACCESS_KEY_ID`
+*   `R2_SECRET_ACCESS_KEY`
+*   `R2_BUCKET_HTML` (Name of your HTML bucket)
+*   `R2_BUCKET_IMAGES` (Name of your Image bucket)
+*   `R2_BUCKET_ZIP` (Name of your ZIP bucket)
+
+#### Step 3: Write the Next.js Catch-All Route
+In Next.js, you can create a "catch-all" route that handles all URLs like `/[course]/[unit]/[lesson]`. 
+
+Create a file at `app/[[...slug]]/route.js`. This file will act exactly like your Cloudflare Worker.
+
+```javascript
+import { S3Client, GetObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
+
+// Configure the S3 Client to point to Cloudflare R2
+const s3Client = new S3Client({
+  region: 'auto',
+  endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+  credentials: {
+    accessKeyId: process.env.R2_ACCESS_KEY_ID,
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+  },
+});
+
+export async function GET(req, { params }) {
+  // e.g., URL: /math101/unit1/lesson1.html
+  // params.slug = ['math101', 'unit1', 'lesson1.html']
+  const slug = params.slug || [];
+  
+  if (slug.length === 0) {
+    return new Response('Welcome to the Course Server', { status: 200 });
+  }
+
+  const courseName = slug[0].toLowerCase();
+  const filePath = slug.join('/');
+
+  let bucketName;
+  let fileType;
+
+  // 1. Route to the correct R2 Bucket
+  if (courseName.startsWith('web')) {
+    bucketName = process.env.R2_BUCKET_HTML;
+    fileType = 'html';
+  } else if (courseName.startsWith('photo')) {
+    bucketName = process.env.R2_BUCKET_IMAGES;
+    fileType = 'image';
+  } else if (courseName.startsWith('code')) {
+    bucketName = process.env.R2_BUCKET_ZIP;
+    fileType = 'zip';
+  } else {
+    return new Response('Course not found', { status: 404 });
+  }
+
+  // 2. Handle Image Gallery (If URL is a folder, not a file)
+  if (fileType === 'image' && !/\.[a-zA-Z0-9]+$/.test(slug[slug.length - 1])) {
+    const prefix = filePath.endsWith('/') ? filePath : filePath + '/';
+    
+    // Fetch list of objects from R2
+    const listCommand = new ListObjectsV2Command({
+      Bucket: bucketName,
+      Prefix: prefix,
+    });
+    const listResponse = await s3Client.send(listCommand);
+    
+    // Generate simple HTML gallery
+    let html = `<html><body><h1>Images in ${filePath}</h1><div style="display:flex;flex-wrap:wrap;gap:10px;">`;
+    
+    (listResponse.Contents || []).forEach(item => {
+      const fileName = item.Key.split('/').pop();
+      if (fileName) {
+        html += `<div><img src="/${item.Key}" style="max-width:200px;" /><p>${fileName}</p></div>`;
+      }
+    });
+    
+    html += `</div></body></html>`;
+    return new Response(html, { headers: { 'Content-Type': 'text/html' } });
+  }
+
+  // 3. Fetch the actual file from R2
+  try {
+    const getCommand = new GetObjectCommand({
+      Bucket: bucketName,
+      Key: filePath,
+    });
+    const response = await s3Client.send(getCommand);
+
+    // 4. Stream the file to the user with correct headers
+    const headers = new Headers();
+    
+    // Copy R2 metadata (like Content-Type)
+    response.Metadata?.forEach((value, key) => headers.set(key, value));
+    if (response.ContentType) headers.set('Content-Type', response.ContentType);
+
+    if (fileType === 'zip') {
+      const fileName = slug[slug.length - 1];
+      headers.set('Content-Disposition', `attachment; filename="${fileName}"`);
+    } else {
+      headers.set('Cache-Control', 'public, max-age=3600');
+    }
+
+    // Return the file stream directly to the browser
+    return new Respo
+nse(response.Body, { headers });
+
+  } catch (error) {
+    if (error.name === 'NoSuchKey') {
+      return new Response('File not found in R2', { status: 404 });
+    }
+    return new Response('Error fetching file', { status: 500 });
+  }
+}
+```
+
+#### Step 4: Deploy to Vercel
+Run:
+```bash
+vercel
+```
+Or push your code to GitHub and connect the repository to Vercel.
+
+### Summary of why this is the best plan:
+1. **No Rebuilds Needed:** By using `app/[[...slug]]/route.js` as a dynamic API, Vercel fetches from R2 on-demand. You never have to rebuild your Vercel site when you add new lessons to R2.
+2. **S3 Compatibility:** Because we use the AWS S3 SDK, Next.js communicates with Cloudflare R2 natively and securely.
+3. **Smart Rendering:** The code checks if the user is requesting an HTML file (renders it), an Image gallery (generates HTML on the fly), or a ZIP file (forces a download).
+
+
+To completely avoid Vercel Serverless Functions (which removes cold starts, compute limits, and function costs), you must use **Vercel Edge Rewrites** combined with **Cloudflare R2 Public Buckets**.
+
+This approach turns Vercel into a "dumb" router. Vercel simply looks at the URL and instantly redirects the user's browser to fetch the file directly from Cloudflare R2. No Node.js code is executed.
+
+Here is the exact plan to achieve this without a single serverless function.
+
+---
+
+### Step 1: Make your R2 Buckets Public
+Since Vercel won't be fetching the files securely in the background, the public needs to be able to access the R2 files directly via a URL.
+
+1. Go to your Cloudflare Dashboard -> R2.
+2. Click on your HTML bucket, go to **Settings**, and enable **Public Access** (connect a custom domain or use the provided `r2.dev` subdomain). Let's say your HTML bucket becomes `https://html-bucket.yourdomain.com`.
+3. Repeat for your Images bucket (`https://img-bucket.yourdomain.com`) and ZIP bucket (`https://zip-bucket.yourdomain.com`).
+
+### Step 2: Configure `vercel.json` Rewrites
+In your Vercel project root, create a `vercel.json` file. Vercel Rewrites allow you to map incoming URLs to external URLs without triggering a serverless function.
+
+*Note: Because we aren't using serverless logic, routing by "course name" (like `math101` vs `science101`) is harder to do dynamically. Instead, it is much better to route by **URL prefix**.*
+
+Here is the configuration:
+
+```json
+{
+  "rewrites": [
+    {
+      "source": "/html/:course/:unit/:lesson*",
+      "destination": "https://html-bucket.yourdomain.com/:course/:unit/:lesson*"
+    },
+    {
+      "source": "/images/:course/:unit/:lesson*",
+      "destination": "https://img-bucket.yourdomain.com/:course/:unit/:lesson*"
+    },
+    {
+      "source": "/zip/:course/:unit/:lesson*",
+      "destination": "https://zip-bucket.yourdomain.com/:course/:unit/:lesson*"
+    }
+  ]
+}
+```
+
+### How this works in practice:
+
+1. **HTML Files:** User visits `vercel.app/html/math101/unit1/lesson1.html`.
+   * Vercel intercepts this instantly at the Edge.
+   * Vercel fetches (or redirects to) `https://html-bucket.yourdomain.com/math101/unit1/lesson1.html`.
+   * **Result:** HTML renders in the browser.
+
+2. **Image Files:** User visits `vercel.app/images/photography/unit1/lesson1.jpg`.
+   * Vercel routes them to `https://img-bucket.yourdomain.com/photography/unit1/lesson1.jpg`.
+   * **Result:** Image renders in the browser.
+
+3. **ZIP Files:** User visits `vercel.app/zip/coding/unit1/project.zip`.
+   * Vercel routes them to `https://zip-bucket.yourdomain.com/coding/unit1/project.zip`.
+   * **Result:** Because R2 natively assigns `Content-Type: application/zip` to zip files, the browser will automatically trigger a download.
+
+---
+
+### The Trade-offs of avoiding Serverless
+
+Because you are strictly avoiding serverless functions, you lose the ability to run dynamic logic. Here is how you handle the features you previously had:
+
+#### 1. How to handle the "Image Gallery"?
+Without a serverless function, Vercel cannot ask R2 to "list all images in a folder and generate an HTML page."
+*   **Solution:** You must manually create an `index.html` file inside your R2 image bucket folders. 
+*   If a user visits `vercel.app/images/photography/unit1/`, R2 will look for an `index.html` file in that folder. If you put standard `<img src="image1.jpg" />` tags inside that HTML file, the gallery will render perfectly without any serverless code.
+
+#### 2. Forcing ZIP Downloads
+Without a serverless function setting the `Content-Disposition: attachment` header, you rely entirely on the browser's default behavior. 
+*   Fortunately, all modern browsers automatically prompt a "Download" dialog when they encounter a `.zip` file, even without the attachment header. 
+*   If you want to be 100% sure, you can set the `Content-Disposition` metadata directly on the file inside Cloudflare R2 when you upload it. (In the Cloudflare R2 dashboard, you can add custom metadata to individual objects).
+
+### Summary
+By using `vercel.json` rewrites pointing to public R2 buckets, you achieve absolute zero serverless execution. Vercel acts purely as a proxy, making it incredibly fast, infinitely scalable, and completely free of compute costs. You just have to structure your URLs with `/html/`, `/images/`, and `/zip/` prefixes.
+
+
+To secure your setup so that only your Vercel application can access your Cloudflare Worker (and keep your R2 buckets completely private), you need to implement **Core Web Security policies**. 
+
+Because you are using HTML `<iframe>`, `<img>`, and `<a>` tags on Vercel to embed the Cloudflare Worker content, you cannot use traditional API keys (browsers cannot securely hide API keys in frontend HTML). 
+
+Instead, we will use a combination of **Referer Checking**, **CORS (Cross-Origin Resource Sharing)**, and **CSP (Content Security Policy)**.
+
+Here is the step-by-step guide to setting this up.
+
+### Step 1: Make Sure R2 is Private (The Vault)
+In your Cloudflare R2 dashboard, ensure **Public Access is disabled** for all three buckets. They should only be accessible via your Worker's R2 bindings.
+
+### Step 2: Update the Worker with Core Security
+We will update your Cloudflare Worker to check where the request is coming from. If the request comes from your Vercel URL (e.g., `https://my-app.vercel.app`), it allows it. If someone tries to open the Worker URL directly in their browser, it blocks it.
+
+Update your `src/index.js` in your Cloudflare Worker:
+
+```javascript
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    
+    // ==========================================
+    // 1. SECURITY: CORS & FRAME SETTINGS
+    // ==========================================
+    const allowedVercelDomain = "https://your-app.vercel.app"; // CHANGE THIS to your Vercel URL
+
+    const securityHeaders = {
+      // CORS: Allows Vercel to make requests to this Worker
+      "Access-Control-Allow-Origin": allowedVercelDomain,
+      "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+      
+      // CSP & X-Frame-Options: Prevents anyone else from putting your Worker in an iframe
+      "Content-Security-Policy": `frame-ancestors 'self' ${allowedVercelDomain};`,
+      "X-Frame-Options": `ALLOW-FROM ${allowedVercelDomain}`,
+      
+      // Prevent MIME-sniffing
+      "X-Content-Type-Options": "nosniff"
+    };
+
+    // Handle CORS preflight requests from Vercel
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: securityHeaders });
+    }
+
+    // ==========================================
+    // 2. SECURITY: REFERER CHECK
+    // ==========================================
+    const referer = request.headers.get("Referer");
+    
+    // If there is a Referer, ensure it comes from your Vercel app.
+    // Note: Browsers send the Referer header automatically for <img>, <iframe>, and <a> tags.
+    if (referer && !referer.startsWith(allowedVercelDomain)) {
+      return new Response("Access Denied: Unauthorized domain.", { status: 403, headers: securityHeaders });
+    }
+
+    // Optional: Block direct access to the Worker URL (no Referer)
+    // Uncomment this if you want to STRICTLY require the file to be loaded via Vercel
+    /*
+    if (!referer) {
+      return new Response("Access Denied: Direct access forbidden.", { status: 403, headers: securityHeaders });
+    }
+    */
+
+    // ==========================================
+    // 3. ROUTING & FETCHING LOGIC (From previous steps)
+    // ==========================================
+    const pathnameParts = url.pathname.split('/').filter(Boolean);
+
+    if (pathnameParts.length === 0) {
+      return new Response("Course API Running.", { status: 200, headers: securityHeaders });
+    }
+
+    const courseName = pathnameParts[0].toLowerCase();
+    const filePath = pathnameParts.join('/');
+
+    let selectedBucket;
+    let fileType;
+
+    if (courseName.startsWith('web')) {
+      selectedBucket = env.HTML_BUCKET;
+      fileType = 'html';
+    } else if (courseName.startsWith('photo')) {
+      selectedBucket = env.IMAGE_BUCKET;
+      fileType = 'image';
+    } else if (courseName.startsWith('code')) {
+      selectedBucket = env.ZIP_BUCKET;
+      fileType = 'zip';
+    } else {
+      return new Response("Course not found.", { status: 404, headers: securityHeaders });
+    }
+
+    // Handle Image Gallery
+    if (fileType === 'image' && !/\.[a-zA-Z0-9]+$/.test(pathnameParts[pathnameParts.length - 1])) {
+      const galleryHtml = await renderImageGallery(selectedBucket, filePath, url.pathname);
+      // Append security headers to gallery response
+      const response = new Response(galleryHtml.body, { status: galleryHtml.status, headers: galleryHtml.headers });
+      for (const [key, value] of Object.entries(securityHeaders)) {
+        response.headers.set(key, value);
+      }
+      return response;
+    }
+
+    // Fetch File
+    const object = await selectedBucket.get(filePath);
+
+    if (object === null) {
+      return new Response("File not found.", { status: 404, headers: securityHeaders });
+    }
+
+    const headers = new Headers();
+    object.writeHttpMetadata(headers);
+    headers.set('etag', object.httpEtag);
+
+    // Apply security headers to the file response
+    for (const [key, value] of Object.entries(securityHeaders)) {
+      headers.set(key, value);
+    }
+
+    if (fileType === 'zip') {
+      const fileName = pathnameParts[pathnameParts.length - 1];
+      headers.set('Content-Disposition', `attachment; filename="${fileName}"`);
+    } else {
+      headers.set('Cache-Control', 'public, max-age=3600');
+    }
+
+    return new Response(object.body, { headers });
+  }
+};
+
+// ... (Keep your renderImageGallery function here from the previous code)
+```
+
+### Step 3: How these Core Security Features Protect You
+
+1. **R2 Privacy:** Your R2 buckets have zero public URLs. Hackers cannot guess the R2 URL because it doesn't exist on the internet. Only the Worker can talk to R2.
+2. **CORS (`Access-Control-Allow-Origin`):** If a hacker builds a website and tries to use JavaScript (`fetch()`) to pull your lesson files from the Worker to their site, the browser will block it. Only `https://your-app.vercel.app` is allowed to make programmatic requests.
+3. **iFrame Protection (`Content-Security-Policy: frame-ancestors`):** If a hacker tries to embed your Worker HTML on their site like `<iframe src="https://course-worker.../web-design/unit1/lesson1.html"></iframe>`, the browser will refuse to render it. The file will only render inside an iframe on your Vercel domain.
+4. **Referer Validation:** The Worker actively inspects the `Referer` header sent by the browser. If the browser says "I am loading this from `hacker-site.com`", the Worker instantly returns a `403 Forbidden` error.
+
+### Step 4: Advanced Security (User Logins)
+If your Vercel app requires users to log in (e.g., students pay for courses), you can take security one step further:
+
+Instead of using plain HTML `<iframe>` tags in Vercel, you would use a Next.js API Route on Vercel to verify the user's session. If the user is logged in and paid, Vercel generates a **Signed URL** (a temporary Cloudflare Worker URL with a secure, expiring token) and gives that to the `<iframe>`. 
+
+However, if you are just looking to protect your buckets from being scraped or embedded by other websites, the Referer + CSP + CORS method above is the industry standard for static-to-edge integrations.

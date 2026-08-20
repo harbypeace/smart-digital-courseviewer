@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lesson-viewer",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "r2_buckets": [
+    {
+      "binding": "COURSES_IMAGES",
+      "bucket_name": "coursesimages"
+    },
+    {
+      "binding": "COURSES",
+      "bucket_name": "courses"
+    },
+    {
+      "binding": "HARBY",
+      "bucket_name": "harby"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}
