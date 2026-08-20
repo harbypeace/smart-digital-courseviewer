@@ -1,0 +1,43 @@
+{
+  "name": "@openmaic/viewer",
+  "version": "0.1.0",
+  "description": "Standalone classroom viewer component — drop into any React app to render OpenMAIC classroom JSON.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\" && rollup -c && tsc --emitDeclarationOnly --declarationDir dist",
+    "dev": "rollup -c -w",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": ["classroom", "viewer", "slide", "education"],
+  "license": "MIT",
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18",
+    "motion": ">=11"
+  },
+  "dependencies": {
+    "@openmaic/dsl": "*",
+    "@openmaic/renderer": "*",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.562.0"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^28.0.1",
+    "@rollup/plugin-node-resolve": "^16.0.1",
+    "@rollup/plugin-typescript": "^12.1.0",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "rollup": "^4.35.0",
+    "typescript": "^5"
+  }
+}
