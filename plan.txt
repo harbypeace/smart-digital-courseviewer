@@ -1,0 +1,10 @@
+to make privite layer of the bucket i want to create cf pages which render the workers as html pages 
+for printedpages , classrooms using  player like"D:\projects\player" 
+render the html also as 
+
+in course viewer can be render only as iframe to make render faster
+make securtiy  
+ for privete buckets
+test those pages before 
+
+critical rules dont update the parent viewer instead test to render it as seperate project

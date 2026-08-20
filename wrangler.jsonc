@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "courseviewer-cf-pages",
+  "pages_build_output_dir": "dist",
+  "compatibility_date": "2026-08-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "r2_buckets": [
+    {
+      "binding": "COURSES",
+      "bucket_name": "courses"
+    },
+    {
+      "binding": "HARBY",
+      "bucket_name": "harby"
+    }
+  ],
+  "vars": {
+    "ALLOWED_ORIGINS": "http://localhost:5173,http://localhost:3000,https://courseviewer.pages.dev"
+  }
+}
