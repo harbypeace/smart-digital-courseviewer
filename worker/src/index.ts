@@ -927,7 +927,16 @@ export default {
 
     // ── JWT Authentication (Option A) ──
     if (env.JWT_SECRET) {
-      const isPublic = p === '/' || p === '/api/health' || p.startsWith('/thumbnails/');
+      // Printed pages, thumbnails, and public page scans are exempt from security
+      const isPublic =
+        p === '/' ||
+        p === '/api/health' ||
+        p.startsWith('/thumbnails/') ||
+        p.startsWith('/pages/') ||
+        p === '/printed-pages' ||
+        p === '/api/printed-pages' ||
+        p.startsWith('/lesson/');
+
       if (!isPublic) {
         const token = extractJwtFromRequest(req);
         if (!token) {
