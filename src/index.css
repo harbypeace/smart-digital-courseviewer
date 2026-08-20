@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-main: #060913;
+  --card-bg: #0f172a;
+  --card-border: rgba(255, 255, 255, 0.08);
+  --accent-emerald: #10b981;
+  --accent-cyan: #06b6d4;
+  --accent-amber: #f59e0b;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg-main);
+  color: #f8fafc;
+  font-family: 'Cairo', 'Tajawal', system-ui, -apple-system, sans-serif;
+  overflow-x: hidden;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #090d16;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Hide internal OpenMAIC viewer playback bar */
+.cv-icon-btn,
+div:has(> .cv-icon-btn),
+div[style*="user-select: none"][style*="border-top"]:has(button) {
+  display: none !important;
+}
