@@ -1,5 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { cleanUnitCode, cleanLessonCode, generatePrivateHtmlUrl, generatePrivateHtmlCandidates, PUBLIC_R2_IMAGES } from '../lib/utils';
+import {
+  cleanUnitCode,
+  cleanLessonCode,
+  generatePrivateHtmlCandidates,
+  PUBLIC_R2_IMAGES,
+  COURSE_FOLDERS,
+} from '../lib/utils';
 import { Loader2, AlertCircle, RefreshCw, Maximize2, Minimize2, Printer } from 'lucide-react';
 
 export function HtmlLessonViewer() {
@@ -20,9 +26,10 @@ export function HtmlLessonViewer() {
     const s = params.get('subject') || 'hadith11';
     const u = cleanUnitCode(params.get('unit') || 'u1');
     const l = cleanLessonCode(params.get('lesson') || 'l1');
-    const file = params.get('file') || params.get('html');
+    const folder = params.get('folder') || COURSE_FOLDERS[s] || s;
+    const file = params.get('file') || params.get('html') || (folder ? `${folder}/${folder}_${u}${l}.html` : undefined);
 
-    const candidates = generatePrivateHtmlCandidates(s, u, l, file || undefined);
+    const candidates = generatePrivateHtmlCandidates(s, u, l, file || undefined, folder);
     let resolvedHtml: string | null = null;
     let resolvedUrl: string = '';
 
@@ -30,9 +37,20 @@ export function HtmlLessonViewer() {
       try {
         const res = await fetch(url);
         if (res.ok) {
-          resolvedHtml = await res.text();
-          resolvedUrl = url;
-          break;
+          const text = await res.text();
+          if (
+            text &&
+            text.trim().length > 0 &&
+            !text.startsWith('{"error"') &&
+            !text.includes('"File not found"') &&
+            !text.includes('"Lesson not found"') &&
+            !text.includes('"HTML file not found"') &&
+            (text.includes('<html') || text.includes('<!DOCTYPE') || text.includes('<div') || text.includes('<style') || text.includes('<body'))
+          ) {
+            resolvedHtml = text;
+            resolvedUrl = url;
+            break;
+          }
         }
       } catch (_e) {}
     }
@@ -86,6 +104,7 @@ export function HtmlLessonViewer() {
       className="w-full h-screen min-h-screen bg-slate-950 text-slate-100 overflow-hidden relative"
       onMouseEnter={() => setShowControls(true)}
       onMouseLeave={() => setShowControls(false)}
+      dir="rtl"
     >
       {/* ── Minimalist Floating Action Controls (Hover Overlay) ── */}
       <aside
