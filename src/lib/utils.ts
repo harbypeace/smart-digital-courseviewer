@@ -80,9 +80,13 @@ export function generatePageImageCandidates(
   const relPage = Math.max(1, (pageNum - startPage) + 1);
 
   const candidates = [
+    `/pages/${s}/${u}/${l}/page-${pageNum}-w${width}.webp`,
     `${PUBLIC_R2_IMAGES}/${s}/${u}/${l}/page-${pageNum}-w${width}.webp`,
+    `/pages/${s}/${u}/${l}/page-${relPage}-w${width}.webp`,
     `${PUBLIC_R2_IMAGES}/${s}/${u}/${l}/page-${relPage}-w${width}.webp`,
+    `/pages/${s}/${u}/${l}/page-${pageNum}.webp`,
     `${PUBLIC_R2_IMAGES}/${s}/${u}/${l}/page-${pageNum}.webp`,
+    `/pages/${s}/${u}/${l}/page-${relPage}.webp`,
     `${PUBLIC_R2_IMAGES}/${s}/${u}/${l}/page-${relPage}.webp`,
   ];
 

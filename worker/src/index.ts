@@ -14,6 +14,7 @@ import { AwsClient } from 'aws4fetch';
 import { verifyJwt, extractJwtFromRequest, isCourseAuthorized, type JwtPayload } from './jwt';
 
 export interface Env {
+  ASSETS?: Fetcher;
   COURSES_IMAGES?: R2Bucket;
   COURSES?: R2Bucket;
   HARBY?: R2Bucket;
@@ -176,6 +177,23 @@ async function fetchR2Object(env: Env, bucketName: 'coursesimages' | 'courses' |
 /**
  * Normalizes Classroom classdata.json by fixing old dead HTTP audio URLs to migrated R2 voiceover paths.
  */
+/**
+ * Normalizes a scene media URL to the live OpenMAIC media host over HTTPS.
+ * The courses bucket is now private, so scene images/videos must be served
+ * directly from the still-public open.maic.chat media CDN.
+ */
+function normalizeMediaSrc(src: string | undefined, classroomId: string): string | undefined {
+  if (!src) return src;
+  if (src.startsWith('data:') || src.startsWith('blob:')) return src;
+  if (/^https:\/\//i.test(src)) return src;
+  if (/^http:\/\//i.test(src)) return src.replace(/^http:/, 'https:');
+  const clean = src.replace(/^\/+/, '');
+  const name = clean.split('/').pop() || clean;
+  const hasExt = /\.[a-zA-Z0-9]{2,5}$/.test(name);
+  const filename = hasExt ? name : `${name}.jpeg`;
+  return `https://open.maic.chat/api/classroom-media/${classroomId}/media/${filename}`;
+}
+
 function normalizeClassroomData(jsonData: any, subject: string, unit: string, lesson: string, classroomId: string): any {
   if (!jsonData || typeof jsonData !== 'object') return jsonData;
 
@@ -186,6 +204,14 @@ function normalizeClassroomData(jsonData: any, subject: string, unit: string, le
 
   if (Array.isArray(clone.scenes)) {
     clone.scenes.forEach((scene: any, sceneIdx: number) => {
+      const canvasElements = scene?.content?.canvas?.elements;
+      if (Array.isArray(canvasElements)) {
+        canvasElements.forEach((el: any) => {
+          if ((el.type === 'image' || el.type === 'video') && el.src) {
+            el.src = normalizeMediaSrc(el.src, classroomId);
+          }
+        });
+      }
       if (Array.isArray(scene.actions)) {
         let speechIdx = 0;
         scene.actions.forEach((act: any) => {
@@ -925,45 +951,70 @@ export default {
     const url = new URL(req.url);
     const p = url.pathname;
 
-    // ── JWT Authentication (Option A) ──
-    if (env.JWT_SECRET) {
-      // Printed pages, thumbnails, and public page scans are exempt from security
-      const isPublic =
-        p === '/' ||
-        p === '/api/health' ||
-        p.startsWith('/thumbnails/') ||
-        p.startsWith('/pages/') ||
-        p === '/printed-pages' ||
-        p === '/api/printed-pages' ||
-        p.startsWith('/lesson/');
+    // ── 0. Static Assets & React Frontend SPA ──
+    if (env.ASSETS) {
+      if (
+        p.startsWith('/assets/') ||
+        p.endsWith('.js') ||
+        p.endsWith('.css') ||
+        p.endsWith('.svg') ||
+        p.endsWith('.ico') ||
+        p.endsWith('.woff2') ||
+        p === '/catalog.html'
+      ) {
+        return env.ASSETS.fetch(req);
+      }
 
-      if (!isPublic) {
-        const token = extractJwtFromRequest(req);
-        if (!token) {
-          return jsonResponse({
-            status: 'error',
-            code: 'UNAUTHORIZED',
-            error: 'Authentication required. Please provide a valid signed JWT token.',
-          }, 401);
-        }
-        const verification = await verifyJwt(token, env.JWT_SECRET);
-        if (!verification.valid || !verification.payload) {
-          return jsonResponse({
-            status: 'error',
-            code: 'INVALID_TOKEN',
-            error: verification.error || 'Invalid or expired JWT token',
-          }, 401);
-        }
-        const subjectParam = url.searchParams.get('subject') || '';
-        if (subjectParam && !isCourseAuthorized(verification.payload, subjectParam)) {
-          return jsonResponse({
-            status: 'error',
-            code: 'FORBIDDEN',
-            error: `Access to course subject '${subjectParam}' is not permitted for this user account.`,
-          }, 403);
-        }
+      // If browser visits web pages: render full React SPA
+      const acceptHeader = req.headers.get('Accept') || '';
+      if (
+        (p === '/' || p === '/classroom' || p === '/printed-pages') &&
+        (acceptHeader.includes('text/html') || !p.startsWith('/api/'))
+      ) {
+        return env.ASSETS.fetch(req);
       }
     }
+
+    // ── JWT Authentication (Option A) ──
+    // DISABLED for now: uncomment to re-enable private-bucket JWT gating.
+    // if (env.JWT_SECRET) {
+    //   // Printed pages, thumbnails, and public page scans are exempt from security
+    //   const isPublic =
+    //     p === '/' ||
+    //     p === '/api/health' ||
+    //     p.startsWith('/thumbnails/') ||
+    //     p.startsWith('/pages/') ||
+    //     p === '/printed-pages' ||
+    //     p === '/api/printed-pages' ||
+    //     p.startsWith('/lesson/');
+    //
+    //   if (!isPublic) {
+    //     const token = extractJwtFromRequest(req);
+    //     if (!token) {
+    //       return jsonResponse({
+    //         status: 'error',
+    //         code: 'UNAUTHORIZED',
+    //         error: 'Authentication required. Please provide a valid signed JWT token.',
+    //       }, 401);
+    //     }
+    //     const verification = await verifyJwt(token, env.JWT_SECRET);
+    //     if (!verification.valid || !verification.payload) {
+    //       return jsonResponse({
+    //         status: 'error',
+    //         code: 'INVALID_TOKEN',
+    //         error: verification.error || 'Invalid or expired JWT token',
+    //       }, 401);
+    //     }
+    //     const subjectParam = url.searchParams.get('subject') || '';
+    //     if (subjectParam && !isCourseAuthorized(verification.payload, subjectParam)) {
+    //       return jsonResponse({
+    //         status: 'error',
+    //         code: 'FORBIDDEN',
+    //         error: `Access to course subject '${subjectParam}' is not permitted for this user account.`,
+    //       }, 403);
+    //     }
+    //   }
+    // }
 
     // ── 1. Health & Discovery API ──────────────────────────────────────
     if (p === '/' || p === '/api/health') {

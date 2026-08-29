@@ -43,6 +43,8 @@ export function useViewportSize(
     const canvasWidth = canvasRef.current.clientWidth;
     const canvasHeight = canvasRef.current.clientHeight;
 
+    if (!canvasWidth || !canvasHeight || canvasWidth <= 0 || canvasHeight <= 0) return;
+
     if (canvasHeight / canvasWidth > viewportRatio) {
       const viewportActualWidth = canvasWidth * (canvasPercentage / 100);
       setFitScale(viewportActualWidth / viewportSize);

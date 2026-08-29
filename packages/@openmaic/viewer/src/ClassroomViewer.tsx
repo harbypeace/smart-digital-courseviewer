@@ -120,12 +120,20 @@ export function ClassroomViewer({
   const playingRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Track startScene changes with ref to avoid loop with onProgress
+  const prevStartSceneRef = useRef(startScene);
+  const prevStartActionRef = useRef(startAction);
+
   useEffect(() => {
     if (data) {
-      setSceneIdx(Math.min(startScene, data.scenes.length - 1));
-      setActionIdx(startAction);
+      if (prevStartSceneRef.current !== startScene || prevStartActionRef.current !== startAction) {
+        prevStartSceneRef.current = startScene;
+        prevStartActionRef.current = startAction;
+        setSceneIdx(Math.min(startScene, data.scenes.length - 1));
+        setActionIdx(startAction);
+      }
     }
-  }, [data, startScene]);
+  }, [data, startScene, startAction]);
 
   useEffect(() => {
     if (data && autoPlay) {
@@ -133,11 +141,14 @@ export function ClassroomViewer({
     }
   }, [data, autoPlay]);
 
+  const onProgressRef = useRef(onProgress);
+  onProgressRef.current = onProgress;
+
   useEffect(() => {
-    if (data && onProgress) {
-      onProgress(sceneIdx, actionIdx);
+    if (data && onProgressRef.current) {
+      onProgressRef.current(sceneIdx, actionIdx);
     }
-  }, [sceneIdx, actionIdx, data, onProgress]);
+  }, [sceneIdx, actionIdx, data]);
 
   const rtl = isRtl(data?.stage?.languageDirective);
   const scene = data?.scenes[sceneIdx];

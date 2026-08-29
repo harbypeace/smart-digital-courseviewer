@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { PrintedPagesViewer } from './pages/PrintedPagesViewer';
 import { ClassroomPlayerPage } from './pages/ClassroomPlayerPage';
-import { HtmlLessonViewer } from './pages/HtmlLessonViewer';
 import { TestShowcase } from './pages/TestShowcase';
 
 function getInitialRoute(): string {
-  if (typeof window === 'undefined') return 'test';
+  if (typeof window === 'undefined') return 'classroom';
   const path = window.location.pathname.toLowerCase();
   const params = new URLSearchParams(window.location.search);
   const mode = params.get('mode')?.toLowerCase();
@@ -14,36 +13,30 @@ function getInitialRoute(): string {
   if (path.includes('/printed-pages') || path.includes('/lesson/') || mode === 'printed' || view === 'printed') {
     return 'printed';
   }
-  if (path.includes('/classroom') || mode === 'classroom' || mode === 'classid' || mode === 'zip' || mode === 'json' || view === 'classroom') {
-    return 'classroom';
+  if (path.includes('/test') || mode === 'test' || view === 'test') {
+    return 'test';
   }
-  if (path.includes('/html') || mode === 'html' || view === 'html') {
-    return 'html';
-  }
-  return 'test';
+  return 'classroom';
 }
 
 export default function App() {
   const [currentRoute, setCurrentRoute] = useState<string>(getInitialRoute);
 
   useEffect(() => {
-    const route = getInitialRoute();
-    if (route !== currentRoute) {
-      setCurrentRoute(route);
-    }
-  }, [currentRoute]);
+    const handlePopState = () => {
+      setCurrentRoute(getInitialRoute());
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   if (currentRoute === 'printed') {
     return <PrintedPagesViewer />;
   }
 
-  if (currentRoute === 'classroom') {
-    return <ClassroomPlayerPage />;
+  if (currentRoute === 'test') {
+    return <TestShowcase />;
   }
 
-  if (currentRoute === 'html') {
-    return <HtmlLessonViewer />;
-  }
-
-  return <TestShowcase />;
+  return <ClassroomPlayerPage />;
 }

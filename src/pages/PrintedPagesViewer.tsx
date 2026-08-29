@@ -25,9 +25,9 @@ export function PrintedPagesViewer() {
   const [subject, setSubject] = useState('adb10p1');
   const [unit, setUnit] = useState('u1');
   const [lesson, setLesson] = useState('l1');
-  const [startPage, setStartPage] = useState(11);
-  const [endPage, setEndPage] = useState(15);
-  const [currentPage, setCurrentPage] = useState(11);
+  const [startPage, setStartPage] = useState(0);
+  const [endPage, setEndPage] = useState(10);
+  const [currentPage, setCurrentPage] = useState(0);
 
   // Layout mode: 'vertical' (seamless continuous flow) or 'horizontal' (page flip)
   const [layoutMode, setLayoutMode] = useState<'vertical' | 'horizontal'>('vertical');
@@ -51,12 +51,33 @@ export function PrintedPagesViewer() {
   // Parse URL search parameters on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const s = params.get('subject') || 'adb10p1';
-    const u = cleanUnitCode(params.get('unit') || 'u1');
-    const l = cleanLessonCode(params.get('lesson') || 'l1');
-    const start = parseInt(params.get('start') || '11', 10);
-    const end = parseInt(params.get('end') || params.get('total') || '15', 10);
-    const initialPage = parseInt(params.get('page') || String(start), 10);
+    const pathname = window.location.pathname;
+
+    // Support path-based URLs: /lesson/:subject/:unit/:lesson or /printed-pages/:subject/:unit/:lesson
+    const pathMatch = pathname.match(/\/(?:lesson|printed-pages)\/([^/]+)(?:\/([^/]+)\/([^/]+))?(?:\/(\d+))?(?:\/(\d+))?/i);
+    let pathSubject = '';
+    let pathUnit = '';
+    let pathLesson = '';
+    let pathStart = '';
+    let pathEnd = '';
+
+    if (pathMatch) {
+      pathSubject = pathMatch[1] !== 'index.html' ? pathMatch[1] : '';
+      pathUnit = pathMatch[2] || '';
+      pathLesson = pathMatch[3] || '';
+      pathStart = pathMatch[4] || '';
+      pathEnd = pathMatch[5] || '';
+    }
+
+    const s = params.get('subject') || pathSubject || 'adb10p1';
+    const u = cleanUnitCode(params.get('unit') || pathUnit || 'u1');
+    const l = cleanLessonCode(params.get('lesson') || pathLesson || 'l1');
+    const startParam = params.get('start');
+    const endParam = params.get('end') || params.get('total');
+    const start = startParam !== null ? parseInt(startParam, 10) : (pathStart !== '' ? parseInt(pathStart, 10) : 0);
+    const end = endParam !== null ? parseInt(endParam, 10) : (pathEnd !== '' ? parseInt(pathEnd, 10) : (start + 10));
+    const pageParam = params.get('page');
+    const initialPage = pageParam !== null ? parseInt(pageParam, 10) : start;
     const mode = params.get('layout') || params.get('mode');
 
     setSubject(s);
@@ -343,11 +364,9 @@ export function PrintedPagesViewer() {
                   ) : (
                     <img
                       src={getPageSrc(pageNum)}
-                      srcSet={`${generatePageImageUrl(subject, unit, lesson, pageNum, 600)} 600w, ${generatePageImageUrl(subject, unit, lesson, pageNum, 900)} 900w, ${generatePageImageUrl(subject, unit, lesson, pageNum, 1200)} 1200w`}
-                      sizes="(max-width: 640px) 100vw, (max-width: 1024px) 90vw, 950px"
                       alt={`صفحة ${pageNum}`}
                       className="w-full h-auto max-w-full object-contain block shadow-xl transition-transform hover:brightness-105"
-                      loading="lazy"
+                      loading="eager"
                       onError={() => handleImageError(pageNum)}
                     />
                   )}

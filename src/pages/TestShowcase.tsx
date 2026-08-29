@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { cleanUnitCode, cleanLessonCode } from '../lib/utils';
 
-type ActiveTab = 'classroom' | 'zip' | 'printed' | 'html' | 'diagnostics';
+type ActiveTab = 'classroom' | 'zip' | 'printed' | 'diagnostics';
 
 const CLASSROOM_PRESETS = [
   {
@@ -152,16 +152,13 @@ export function TestShowcase() {
   const printedUrl = `/printed-pages?subject=${encodeURIComponent(subject)}&unit=${encodeURIComponent(unit)}&lesson=${encodeURIComponent(lesson)}&start=${startPage}&end=${endPage}`;
   const classroomUrl = `/classroom?subject=${encodeURIComponent(subject)}&unit=${encodeURIComponent(unit)}&lesson=${encodeURIComponent(lesson)}&id=${encodeURIComponent(classroomId)}`;
   const zipStreamUrl = `/classroom?mode=zip&zipUrl=${encodeURIComponent(zipUrl)}`;
-  const htmlUrl = `/html?subject=${encodeURIComponent(subject)}&unit=${encodeURIComponent(unit)}&lesson=${encodeURIComponent(lesson)}${customHtml ? `&file=${encodeURIComponent(customHtml)}` : ''}`;
 
   const currentEmbedUrl =
     activeTab === 'classroom'
       ? classroomUrl
       : activeTab === 'zip'
       ? zipStreamUrl
-      : activeTab === 'printed'
-      ? printedUrl
-      : htmlUrl;
+      : printedUrl;
 
   const copyIframeCode = () => {
     const code = `<iframe src="${window.location.origin}${currentEmbedUrl}" width="100%" height="750px" style="border:none;border-radius:12px;overflow:hidden;" allow="autoplay; fullscreen"></iframe>`;
@@ -319,17 +316,7 @@ export function TestShowcase() {
             <span>3. صفحات الكتاب المطبوع</span>
           </button>
 
-          <button
-            onClick={() => setActiveTab('html')}
-            className={`px-4 py-2 rounded-xl text-xs font-black flex items-center gap-2 transition ${
-              activeTab === 'html'
-                ? 'bg-sky-600 text-white shadow-lg shadow-sky-600/30'
-                : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
-            }`}
-          >
-            <MonitorPlay className="w-4 h-4" />
-            <span>4. الدرس التفاعلي HTML</span>
-          </button>
+
 
           <button
             onClick={() => setActiveTab('diagnostics')}

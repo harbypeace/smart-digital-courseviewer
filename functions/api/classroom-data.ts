@@ -54,6 +54,23 @@ async function fetchCoursesJson(env: Env, key: string): Promise<any | null> {
   return null;
 }
 
+/**
+ * Normalizes a scene media URL to the live OpenMAIC media host over HTTPS.
+ * The courses bucket is now private, so scene images/videos must be served
+ * directly from the still-public open.maic.chat media CDN.
+ */
+function normalizeMediaSrc(src: string | undefined, classroomId: string): string | undefined {
+  if (!src) return src;
+  if (src.startsWith('data:') || src.startsWith('blob:')) return src;
+  if (/^https:\/\//i.test(src)) return src;
+  if (/^http:\/\//i.test(src)) return src.replace(/^http:/, 'https:');
+  const clean = src.replace(/^\/+/, '');
+  const name = clean.split('/').pop() || clean;
+  const hasExt = /\.[a-zA-Z0-9]{2,5}$/.test(name);
+  const filename = hasExt ? name : `${name}.jpeg`;
+  return `https://open.maic.chat/api/classroom-media/${classroomId}/media/${filename}`;
+}
+
 function normalizeClassroomAudio(data: any, subject: string, unit: string, lesson: string, classroomId: string): any {
   if (!data || typeof data !== 'object') return data;
   const clone = JSON.parse(JSON.stringify(data));
@@ -64,6 +81,14 @@ function normalizeClassroomAudio(data: any, subject: string, unit: string, lesso
 
   if (Array.isArray(clone.scenes)) {
     clone.scenes.forEach((sc: any, scIdx: number) => {
+      const canvasElements = sc?.content?.canvas?.elements;
+      if (Array.isArray(canvasElements)) {
+        canvasElements.forEach((el: any) => {
+          if ((el.type === 'image' || el.type === 'video') && el.src) {
+            el.src = normalizeMediaSrc(el.src, cId);
+          }
+        });
+      }
       if (Array.isArray(sc.actions)) {
         let speechIdx = 0;
         sc.actions.forEach((act: any) => {

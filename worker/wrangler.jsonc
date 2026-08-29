@@ -5,6 +5,11 @@
   "compatibility_date": "2026-08-11",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  "assets": {
+    "directory": "../dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
   "r2_buckets": [
     {
       "binding": "COURSES_IMAGES",

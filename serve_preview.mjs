@@ -59,6 +59,23 @@ function cleanLessonCode(lesson) {
   return match ? `l${match[1]}` : lesson.replace(/.*_/, '');
 }
 
+/**
+ * Normalizes a scene media URL to the live OpenMAIC media host over HTTPS.
+ * The courses bucket is now private, so scene images/videos must be served
+ * directly from the still-public open.maic.chat media CDN.
+ */
+function normalizeMediaSrc(src, classroomId) {
+  if (!src) return src;
+  if (src.startsWith('data:') || src.startsWith('blob:')) return src;
+  if (/^https:\/\//i.test(src)) return src;
+  if (/^http:\/\//i.test(src)) return src.replace(/^http:/, 'https:');
+  const clean = src.replace(/^\/+/, '');
+  const name = clean.split('/').pop() || clean;
+  const hasExt = /\.[a-zA-Z0-9]{2,5}$/.test(name);
+  const filename = hasExt ? name : `${name}.jpeg`;
+  return `https://open.maic.chat/api/classroom-media/${classroomId}/media/${filename}`;
+}
+
 const server = http.createServer(async (req, res) => {
   const reqUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = decodeURIComponent(reqUrl.pathname);
@@ -188,9 +205,17 @@ const server = http.createServer(async (req, res) => {
           const s3Res = await S3_COURSES_CLIENT.fetch(s3Url, { method: 'GET' });
           if (s3Res.ok) {
             const data = await s3Res.json();
-            // Normalize audio
+            // Normalize audio + scene media
             if (data && Array.isArray(data.scenes)) {
               data.scenes.forEach((sc, scIdx) => {
+                const canvasElements = sc?.content?.canvas?.elements;
+                if (Array.isArray(canvasElements)) {
+                  canvasElements.forEach((el) => {
+                    if ((el.type === 'image' || el.type === 'video') && el.src) {
+                      el.src = normalizeMediaSrc(el.src, classroomId);
+                    }
+                  });
+                }
                 if (Array.isArray(sc.actions)) {
                   let speechIdx = 0;
                   sc.actions.forEach((act) => {
@@ -341,6 +366,26 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Object not found in courses bucket', key }));
       return;
+    }
+
+    // ── API 4: /pages/* (Textbook image proxy with CORS) ──
+    if (pathname.startsWith('/pages/')) {
+      const cleanKey = pathname.replace(/^\/pages\//, '');
+      const pubUrl = `https://pub-82c5ce36837a4c7e8093a3bb8ff74057.r2.dev/${cleanKey}`;
+      try {
+        const fetchRes = await fetch(pubUrl);
+        if (fetchRes.ok) {
+          const buf = Buffer.from(await fetchRes.arrayBuffer());
+          res.writeHead(200, {
+            'Access-Control-Allow-Origin': '*',
+            'Content-Type': getMime(cleanKey),
+            'Content-Length': buf.length,
+            'Cache-Control': 'public, max-age=86400',
+          });
+          res.end(buf);
+          return;
+        }
+      } catch (_e) {}
     }
 
     // ── Static Files from dist/ ──

@@ -205,10 +205,30 @@ export function ClassroomPlayerPage() {
     setLoadingMsg('جاري جلب بيانات الدرس التفاعلي من الخادم الآمن...');
 
     const params = new URLSearchParams(window.location.search);
-    const subject = params.get('subject') || 'adb10p1';
-    const unit = cleanUnitCode(params.get('unit') || 'u1');
-    const lesson = cleanLessonCode(params.get('lesson') || 'l1');
-    const classId = params.get('id') || params.get('classroomId') || params.get('classId') || '1v_nRmh_wh';
+    const pathname = window.location.pathname;
+
+    // Support path-based URLs: /classroom/:subject/:unit/:lesson/:id or /classroom/:id
+    const pathMatch = pathname.match(/\/classroom(?:s)?\/([^/]+)(?:\/([^/]+)\/([^/]+)\/([^/]+))?/i);
+    let pathSubject = '';
+    let pathUnit = '';
+    let pathLesson = '';
+    let pathClassId = '';
+
+    if (pathMatch) {
+      if (pathMatch[4]) {
+        pathSubject = pathMatch[1];
+        pathUnit = pathMatch[2];
+        pathLesson = pathMatch[3];
+        pathClassId = pathMatch[4];
+      } else if (pathMatch[1] && pathMatch[1] !== 'index.html') {
+        pathClassId = pathMatch[1];
+      }
+    }
+
+    const subject = params.get('subject') || pathSubject || 'adb10p1';
+    const unit = cleanUnitCode(params.get('unit') || pathUnit || 'u1');
+    const lesson = cleanLessonCode(params.get('lesson') || pathLesson || 'l1');
+    const classId = params.get('id') || params.get('classroomId') || params.get('classId') || pathClassId || '1v_nRmh_wh';
     const zipUrl = params.get('zipUrl') || params.get('zip');
     const jsonUrl = params.get('jsonUrl') || params.get('json');
 
@@ -460,12 +480,15 @@ export function ClassroomPlayerPage() {
     setActiveSceneIndex(idx);
     setActiveActionIndex(0);
     setShowScenesSidebar(false);
+    setShowScriptPanel(true);
   };
 
   const prevScene = () => {
     if (activeSceneIndex > 0) {
       setActiveSceneIndex((i) => i - 1);
       setActiveActionIndex(0);
+      setShowScriptPanel(true);
+      setShowScenesSidebar(false);
     }
   };
 
@@ -473,8 +496,15 @@ export function ClassroomPlayerPage() {
     if (data?.scenes && activeSceneIndex < data.scenes.length - 1) {
       setActiveSceneIndex((i) => i + 1);
       setActiveActionIndex(0);
+      setShowScriptPanel(true);
+      setShowScenesSidebar(false);
     }
   };
+
+  const handleProgress = useCallback((sceneIdx: number, actionIdx: number) => {
+    setActiveSceneIndex((prev) => (prev !== sceneIdx ? sceneIdx : prev));
+    setActiveActionIndex((prev) => (prev !== actionIdx ? actionIdx : prev));
+  }, []);
 
   const copyFullScript = () => {
     if (!data?.scenes) return;
@@ -586,7 +616,7 @@ export function ClassroomPlayerPage() {
             <div className="w-full h-full relative overflow-hidden bg-slate-950">
               <ClassroomErrorBoundary>
                 <ClassroomViewer
-                  key={`${data.id || data.stage?.id || 'classroom'}-${voiceSource}-scene-${activeSceneIndex}`}
+                  key={`${data.id || data.stage?.id || 'classroom'}-${voiceSource}`}
                   data={data}
                   startScene={activeSceneIndex}
                   startAction={activeActionIndex}
@@ -595,10 +625,7 @@ export function ClassroomPlayerPage() {
                   embed={true}
                   hidePlaybackBar={true}
                   autoPlay={isPlaying}
-                  onProgress={(sceneIdx, actionIdx) => {
-                    setActiveSceneIndex(sceneIdx);
-                    setActiveActionIndex(actionIdx);
-                  }}
+                  onProgress={handleProgress}
                   onComplete={() => {
                     setIsPlaying(false);
                   }}
