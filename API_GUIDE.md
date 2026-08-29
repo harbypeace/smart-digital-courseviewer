@@ -144,3 +144,25 @@ Simulates generating a TTS preview for arbitrary text.
   "pitch": 1.0
 }
 ```
+
+---
+
+## 5. Printed Book Pages Reader
+**Endpoint:** `/printed-pages` (or `/api/printed-pages`)  
+**Methods:** `GET`
+
+This endpoint serves the HTML viewer for the printed textbook pages. It dynamically loads the page images for a specified subject, unit, lesson, and page range. It is ideal for embedding the book reader into another application via an `iframe`.
+
+### Request Parameters (Query String)
+*   `subject` (e.g., `adb10p1` or `bio10p1`)
+*   `unit` (e.g., `u1`)
+*   `lesson` (e.g., `l1`)
+*   `start` (Starting page number, e.g., `11`)
+*   `end` (Ending page number, e.g., `15`)
+*   `total` (Alternative to start/end: specifies total pages to load, e.g., `5`)
+
+### Example `GET` Request
+```bash
+# Get the printed pages HTML for Adab Grade 10, Pages 11-15:
+curl "https://courseviewer.lms-yemen.com/printed-pages?subject=adb10p1&unit=u1&lesson=l1&start=11&end=15"
+```
