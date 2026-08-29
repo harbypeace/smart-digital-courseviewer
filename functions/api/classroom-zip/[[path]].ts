@@ -73,11 +73,11 @@ async function fetchZipBuffer(requestUrl: URL, zipParam: string, env: Env): Prom
     } catch (_e) {}
   }
 
-  // 4. From R2 S3 API
+  // 4. From public R2 dev domain
   try {
-    const s3Url = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/courses/${encodeURI(cleanZip).replace(/%2F/g, '/')}`;
-    const s3Res = await S3_COURSES_CLIENT.fetch(s3Url, { method: 'GET' });
-    if (s3Res.ok) return await s3Res.arrayBuffer();
+    const publicUrl = `https://pub-a7d6ac39d1654484ad48d9a264e93d51.r2.dev/${encodeURI(cleanZip).replace(/%2F/g, '/')}`;
+    const pubRes = await fetch(publicUrl, { method: 'GET' });
+    if (pubRes.ok) return await pubRes.arrayBuffer();
   } catch (_e) {}
 
   return null;

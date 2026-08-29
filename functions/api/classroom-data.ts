@@ -44,10 +44,10 @@ async function fetchCoursesJson(env: Env, key: string): Promise<any | null> {
   }
 
   try {
-    const s3Url = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/courses/${encodeURI(cleanKey).replace(/%2F/g, '/')}`;
-    const s3Res = await S3_COURSES_CLIENT.fetch(s3Url, { method: 'GET' });
-    if (s3Res.ok) {
-      return await s3Res.json();
+    const publicUrl = `https://pub-a7d6ac39d1654484ad48d9a264e93d51.r2.dev/${encodeURI(cleanKey).replace(/%2F/g, '/')}`;
+    const pubRes = await fetch(publicUrl, { method: 'GET' });
+    if (pubRes.ok) {
+      return await pubRes.json();
     }
   } catch (_e) {}
 

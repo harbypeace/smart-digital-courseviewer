@@ -111,37 +111,26 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     } catch (_err) {}
   }
 
-  // 3. Fallback: Authenticated S3 API Client for COURSES bucket
+  // 3. Fallback to Public R2 Domain
   try {
-    const s3Url = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/courses/${encodeURI(cleanKey).replace(/%2F/g, '/')}`;
-    const s3Headers: Record<string, string> = {};
-    if (rangeHeader) s3Headers['Range'] = rangeHeader;
+    const publicUrl = `https://pub-a7d6ac39d1654484ad48d9a264e93d51.r2.dev/${encodeURI(cleanKey).replace(/%2F/g, '/')}`;
+    const pubHeaders: Record<string, string> = {};
+    if (rangeHeader) pubHeaders['Range'] = rangeHeader;
 
-    const s3Res = await S3_COURSES_CLIENT.fetch(s3Url, {
+    const pubRes = await fetch(publicUrl, {
       method: 'GET',
-      headers: s3Headers,
+      headers: pubHeaders,
     });
 
-    if (s3Res.ok || s3Res.status === 206) {
-      const headers = new Headers(s3Res.headers);
+    if (pubRes.ok || pubRes.status === 206) {
+      const headers = new Headers(pubRes.headers);
       headers.set('Content-Type', mime);
       headers.set('Accept-Ranges', 'bytes');
       headers.set('Cache-Control', 'private, max-age=3600');
-      return new Response(s3Res.body, {
-        status: s3Res.status,
+      return new Response(pubRes.body, {
+        status: pubRes.status,
         headers,
       });
-    }
-  } catch (_e) {}
-
-  // 4. Fallback to Cloudflare Worker proxy if available
-  try {
-    const workerRes = await fetch(`https://lesson-viewer.abduh-merzah.workers.dev/classroom/${cleanKey}`);
-    if (workerRes.ok) {
-      const headers = new Headers(workerRes.headers);
-      headers.set('Content-Type', mime);
-      headers.set('Cache-Control', 'private, max-age=3600');
-      return new Response(workerRes.body, { status: 200, headers });
     }
   } catch (_e) {}
 
