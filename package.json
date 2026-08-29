@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "patch:packages": "node patch_packages.mjs",
-    "pages:dev": "wrangler pages dev dist --r2=COURSES=courses --r2=HARBY=harby"
+    "pages:dev": "wrangler pages dev dist --r2=COURSES=courses --r2=HARBY=harby",
+    "multitest": "node test_multiple_classrooms.mjs",
+    "multitest:prod": "set PROD=true&& node test_multiple_classrooms.mjs"
   },
   "dependencies": {
     "@openmaic/dsl": "file:./packages/@openmaic/dsl",

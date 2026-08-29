@@ -1,4 +1,4 @@
-const BASE = 'http://127.0.0.1:8788';
+const BASE = process.env.PROD ? 'https://courseviewer.lms-yemen.com' : 'http://127.0.0.1:8788';
 
 const CLASSROOMS_TO_TEST = [
   { subject: 'adb10p1', unit: 'u1', lesson: 'l1', id: '1v_nRmh_wh', label: 'أدب 10 - درس 1' },

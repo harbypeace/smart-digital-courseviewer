@@ -1,0 +1,1 @@
+export default { async fetch(req) { try { const r = await fetch('https://pub-a7d6ac39d1654484ad48d9a264e93d51.r2.dev/classrooms/adb10p1/u1/l1/1v_nRmh_wh/classdata.json'); return new Response(await r.text()); } catch (e) { return new Response(e.toString()); } } }

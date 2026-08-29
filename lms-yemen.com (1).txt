@@ -1,0 +1,39 @@
+;;
+;; Domain:     lms-yemen.com.
+;; Exported:   2026-08-29 08:00:41
+;;
+;; This file is intended for use for informational and archival
+;; purposes ONLY and MUST be edited before use on a production
+;; DNS server.  In particular, you must:
+;;   -- update the SOA record with the correct authoritative name server
+;;   -- update the SOA record with the contact e-mail address information
+;;   -- update the NS record(s) with the authoritative name servers for this domain.
+;;
+;; For further information, please consult the BIND documentation
+;; located on the following website:
+;;
+;; http://www.isc.org/
+;;
+;; And RFC 1035:
+;;
+;; http://www.ietf.org/rfc/rfc1035.txt
+;;
+;; Please note that we do NOT offer technical support for any use
+;; of this zone data, the BIND name server, or any other third-party
+;; DNS software.
+;;
+;; Use at your own risk.
+;; SOA Record
+lms-yemen.com	3600	IN	SOA	addyson.ns.cloudflare.com. dns.cloudflare.com. 2053965704 10000 2400 604800 3600
+
+;; NS Records
+lms-yemen.com.	86400	IN	NS	addyson.ns.cloudflare.com.
+lms-yemen.com.	86400	IN	NS	miles.ns.cloudflare.com.
+
+;; A Records
+lms-yemen.com.	1	IN	A	76.76.21.21 ; cf_tags=cf-proxied:true
+
+;; CNAME Records
+www.lms-yemen.com.	1	IN	CNAME	cname.vercel-dns.com. ; cf_tags=cf-proxied:true
+courseviewer.lms-yemen.com.	1	IN	CNAME	courseviewer-cf-pages.pages.dev. ; cf_tags=cf-proxied:true
+app.lms-yemen.com.	1	IN	CNAME	lmsyemen.vercel.app. ; cf_tags=cf-proxied:true
