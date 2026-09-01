@@ -4,21 +4,12 @@
  * and saving per-scene / per-speech custom audio overrides.
  */
 
-import { AwsClient } from 'aws4fetch';
+import { authorizeRequest, type AuthEnv } from '../lib/auth';
 
-interface Env {
+interface Env extends AuthEnv {
   COURSES?: R2Bucket;
   HARBY?: R2Bucket;
 }
-
-const R2_ACCOUNT_ID = '656055b2b0eea86b43dd2fd4853c100f';
-
-const S3_COURSES_CLIENT = new AwsClient({
-  accessKeyId: 'f942f0be0f3d93ab1e338b10e896bd78',
-  secretAccessKey: 'b7b862585c23e3fa2149ee0a919ba7a3f4c6bc0992d8f3cbc0b1a4f9c2ad55aa',
-  service: 's3',
-  region: 'auto',
-});
 
 function cleanUnitCode(unit?: string): string {
   if (!unit) return 'u1';
@@ -30,6 +21,23 @@ function cleanLessonCode(lesson?: string): string {
   if (!lesson) return 'l1';
   const match = lesson.match(/[cl](\d+)$/i);
   return match ? `l${match[1]}` : lesson.replace(/.*_/, '');
+}
+
+function safePart(value: unknown, fallback: string): string {
+  const candidate = String(value ?? '').trim();
+  return /^[A-Za-z0-9_-]+$/.test(candidate) ? candidate : fallback;
+}
+
+function decodeAudio(audioBase64: string): Uint8Array | null {
+  const encoded = audioBase64.replace(/^data:audio\/[\w.+-]+;base64,/, '');
+  if (!encoded || encoded.length > 21_000_000) return null;
+  try {
+    const binary = atob(encoded);
+    if (binary.length > 15 * 1024 * 1024) return null;
+    return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } catch (_error) {
+    return null;
+  }
 }
 
 export const onRequest: PagesFunction<Env> = async (context) => {
@@ -51,6 +59,10 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     'Access-Control-Allow-Origin': '*',
     'Content-Type': 'application/json; charset=utf-8',
   };
+
+  const requestSubject = new URL(request.url).searchParams.get('subject') || '';
+  const auth = await authorizeRequest(request, env, requestSubject);
+  if (auth.response) return auth.response;
 
   if (request.method === 'GET') {
     // Return available voice profiles and options
@@ -97,23 +109,43 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         text = '',
       } = body;
 
-      const u = cleanUnitCode(unit);
-      const l = cleanLessonCode(lesson);
-      const padScene = String(sceneIndex).padStart(2, '0');
-      const padSpeech = String(speechIndex).padStart(2, '0');
-      const customAudioKey = `classrooms/${subject}/${u}/${l}/${classroomId}/custom_tts/scene_${padScene}_speech_${padSpeech}.mp3`;
+      const bodyAuth = await authorizeRequest(request, env, safePart(subject, 'adb10p1'));
+      if (bodyAuth.response) return bodyAuth.response;
+
+      const safeSubject = safePart(subject, 'adb10p1');
+      const u = safePart(cleanUnitCode(String(unit)), 'u1');
+      const l = safePart(cleanLessonCode(String(lesson)), 'l1');
+      const safeClassroomId = safePart(classroomId, 'classroom');
+      const safeSceneIndex = Number.isInteger(Number(sceneIndex)) && Number(sceneIndex) >= 0 && Number(sceneIndex) < 1000 ? Number(sceneIndex) : 0;
+      const safeSpeechIndex = Number.isInteger(Number(speechIndex)) && Number(speechIndex) >= 0 && Number(speechIndex) < 1000 ? Number(speechIndex) : 0;
+      const padScene = String(safeSceneIndex).padStart(2, '0');
+      const padSpeech = String(safeSpeechIndex).padStart(2, '0');
+      const customAudioKey = `classrooms/${safeSubject}/${u}/${l}/${safeClassroomId}/custom_tts/scene_${padScene}_speech_${padSpeech}.mp3`;
 
       // ── Action 1: Upload Custom Voice Audio File ──
       if (action === 'upload_audio' && audioBase64) {
-        const binaryData = Uint8Array.from(atob(audioBase64.replace(/^data:audio\/\w+;base64,/, '')), (c) => c.charCodeAt(0));
-
-        // Save to R2 bucket if available
-        if (env.COURSES) {
-          try {
-            await env.COURSES.put(customAudioKey, binaryData, {
-              httpMetadata: { contentType: 'audio/mpeg' },
-            });
-          } catch (_e) {}
+        const binaryData = decodeAudio(String(audioBase64));
+        if (!binaryData) {
+          return new Response(JSON.stringify({ error: 'Audio payload is invalid or exceeds the 15 MB limit' }), {
+            status: 413,
+            headers: corsHeaders,
+          });
+        }
+        if (!env.COURSES) {
+          return new Response(JSON.stringify({ error: 'Course storage is not configured' }), {
+            status: 503,
+            headers: corsHeaders,
+          });
+        }
+        try {
+          await env.COURSES.put(customAudioKey, binaryData, {
+            httpMetadata: { contentType: 'audio/mpeg' },
+          });
+        } catch (_error) {
+          return new Response(JSON.stringify({ error: 'Failed to store custom audio' }), {
+            status: 502,
+            headers: corsHeaders,
+          });
         }
 
         const audioUrl = `/api/courses/${customAudioKey}`;
@@ -122,8 +154,8 @@ export const onRequest: PagesFunction<Env> = async (context) => {
             status: 'ok',
             message: 'تم حفظ الصوت المخصص بنجاح',
             audioUrl,
-            sceneIndex,
-            speechIndex,
+            sceneIndex: safeSceneIndex,
+            speechIndex: safeSpeechIndex,
             key: customAudioKey,
           }),
           { status: 200, headers: corsHeaders }

@@ -12,6 +12,30 @@ export const PUBLIC_R2_IMAGES = 'https://pub-82c5ce36837a4c7e8093a3bb8ff74057.r2
 export const PRIVATE_COURSES_PROXY = '/api/courses';
 export const R2_COURSES_BASE = 'https://pub-a7d6ac39d1654484ad48d9a264e93d51.r2.dev';
 
+/** Read the token from the supported URL transport used by iframe/audio embeds. */
+export function getAuthTokenFromLocation(): string | null {
+  if (typeof window === 'undefined') return null;
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get('token') || params.get('jwt');
+  return token?.trim() || null;
+}
+
+/** Append the current JWT only to same-origin protected requests. */
+export function appendAuthToken(input: string, token = getAuthTokenFromLocation()): string {
+  if (!token || typeof window === 'undefined') return input;
+
+  try {
+    const url = new URL(input, window.location.origin);
+    if (url.origin !== window.location.origin) return input;
+    url.searchParams.set('token', token);
+    return input.startsWith('http://') || input.startsWith('https://')
+      ? url.toString()
+      : `${url.pathname}${url.search}${url.hash}`;
+  } catch (_error) {
+    return input;
+  }
+}
+
 // Subject to folder mapping
 export const COURSE_FOLDERS: Record<string, string> = {
   adb10p1: 'adab10', adb11p1: 'adab11', adb12p1: 'adab12p1', ar7p1: 'ara7p1', ar7p2: 'ar7p2',

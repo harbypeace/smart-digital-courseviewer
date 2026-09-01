@@ -21,25 +21,28 @@ export interface Env {
   JWT_SECRET?: string;
   ALLOWED_ORIGINS?: string;
   REQUIRE_AUTH?: string;
+  ALLOW_PUBLIC_R2_FALLBACK?: string;
+  R2_ACCESS_KEY_ID?: string;
+  R2_SECRET_ACCESS_KEY?: string;
 }
 
 const R2_ACCOUNT_ID = '656055b2b0eea86b43dd2fd4853c100f';
 const PUBLIC_R2_IMAGES = 'https://pub-82c5ce36837a4c7e8093a3bb8ff74057.r2.dev';
 const PUBLIC_R2_COURSES = 'https://pub-a7d6ac39d1654484ad48d9a264e93d51.r2.dev';
 
-const S3_IMAGES_CLIENT = new AwsClient({
-  accessKeyId: '4caf4a9a8285b5a9118199f0d41c2770',
-  secretAccessKey: '236368997414d63d9001197a69db69c800ad4fbefffb3ecc1f3b6f6bf1a3b19a',
-  service: 's3',
-  region: 'auto',
-});
+function isEnabled(value?: string): boolean {
+  return value === '1' || value?.toLowerCase() === 'true' || value?.toLowerCase() === 'yes';
+}
 
-const S3_COURSES_CLIENT = new AwsClient({
-  accessKeyId: 'f942f0be0f3d93ab1e338b10e896bd78',
-  secretAccessKey: 'b7b862585c23e3fa2149ee0a919ba7a3f4c6bc0992d8f3cbc0b1a4f9c2ad55aa',
-  service: 's3',
-  region: 'auto',
-});
+function getS3Client(env: Env): AwsClient | null {
+  if (!env.R2_ACCESS_KEY_ID || !env.R2_SECRET_ACCESS_KEY) return null;
+  return new AwsClient({
+    accessKeyId: env.R2_ACCESS_KEY_ID,
+    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+    service: 's3',
+    region: 'auto',
+  });
+}
 
 const CORS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -117,25 +120,30 @@ async function fetchR2Object(env: Env, bucketName: 'coursesimages' | 'courses' |
         }
       } catch (_e) {}
     }
-    try {
-      const url = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/coursesimages/${encodeURI(cleanKey).replace(/%2F/g, '/')}`;
-      const res = await S3_IMAGES_CLIENT.fetch(url, { method: 'GET' });
-      if (res.ok) {
-        const headers = new Headers(CORS);
-        headers.set('Content-Type', getMime(cleanKey));
-        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-        return new Response(res.body, { headers });
-      }
-    } catch (_e) {}
-    try {
-      const pubRes = await fetch(`${PUBLIC_R2_IMAGES}/${cleanKey}`);
-      if (pubRes.ok) {
-        const headers = new Headers(CORS);
-        headers.set('Content-Type', getMime(cleanKey));
-        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-        return new Response(pubRes.body, { headers });
-      }
-    } catch (_e) {}
+    const s3Client = getS3Client(env);
+    if (s3Client) {
+      try {
+        const url = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/coursesimages/${encodeURI(cleanKey).replace(/%2F/g, '/')}`;
+        const res = await s3Client.fetch(url, { method: 'GET' });
+        if (res.ok) {
+          const headers = new Headers(CORS);
+          headers.set('Content-Type', getMime(cleanKey));
+          headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+          return new Response(res.body, { headers });
+        }
+      } catch (_e) {}
+    }
+    if (isEnabled(env.ALLOW_PUBLIC_R2_FALLBACK)) {
+      try {
+        const pubRes = await fetch(`${PUBLIC_R2_IMAGES}/${cleanKey}`);
+        if (pubRes.ok) {
+          const headers = new Headers(CORS);
+          headers.set('Content-Type', getMime(cleanKey));
+          headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+          return new Response(pubRes.body, { headers });
+        }
+      } catch (_e) {}
+    }
   }
 
   if (bucketName === 'courses') {
@@ -150,25 +158,30 @@ async function fetchR2Object(env: Env, bucketName: 'coursesimages' | 'courses' |
         }
       } catch (_e) {}
     }
-    try {
-      const url = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/courses/${encodeURI(cleanKey).replace(/%2F/g, '/')}`;
-      const res = await S3_COURSES_CLIENT.fetch(url, { method: 'GET' });
-      if (res.ok) {
-        const headers = new Headers(CORS);
-        headers.set('Content-Type', getMime(cleanKey));
-        headers.set('Cache-Control', 'public, max-age=3600');
-        return new Response(res.body, { headers });
-      }
-    } catch (_e) {}
-    try {
-      const pubRes = await fetch(`${PUBLIC_R2_COURSES}/${cleanKey}`);
-      if (pubRes.ok) {
-        const headers = new Headers(CORS);
-        headers.set('Content-Type', getMime(cleanKey));
-        headers.set('Cache-Control', 'public, max-age=3600');
-        return new Response(pubRes.body, { headers });
-      }
-    } catch (_e) {}
+    const s3Client = getS3Client(env);
+    if (s3Client) {
+      try {
+        const url = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/courses/${encodeURI(cleanKey).replace(/%2F/g, '/')}`;
+        const res = await s3Client.fetch(url, { method: 'GET' });
+        if (res.ok) {
+          const headers = new Headers(CORS);
+          headers.set('Content-Type', getMime(cleanKey));
+          headers.set('Cache-Control', 'private, max-age=3600');
+          return new Response(res.body, { headers });
+        }
+      } catch (_e) {}
+    }
+    if (isEnabled(env.ALLOW_PUBLIC_R2_FALLBACK)) {
+      try {
+        const pubRes = await fetch(`${PUBLIC_R2_COURSES}/${cleanKey}`);
+        if (pubRes.ok) {
+          const headers = new Headers(CORS);
+          headers.set('Content-Type', getMime(cleanKey));
+          headers.set('Cache-Control', 'private, max-age=3600');
+          return new Response(pubRes.body, { headers });
+        }
+      } catch (_e) {}
+    }
   }
 
   return null;
@@ -200,7 +213,7 @@ function normalizeClassroomData(jsonData: any, subject: string, unit: string, le
   const clone = JSON.parse(JSON.stringify(jsonData));
   const uClean = cleanUnitCode(unit);
   const lClean = cleanLessonCode(lesson);
-  const baseTtsUrl = `${PUBLIC_R2_COURSES}/classrooms/${subject}/${uClean}/${lClean}/${classroomId}/tts`;
+  const baseTtsUrl = `/classrooms/${subject}/${uClean}/${lClean}/${classroomId}/tts`;
 
   if (Array.isArray(clone.scenes)) {
     clone.scenes.forEach((scene: any, sceneIdx: number) => {
@@ -221,7 +234,7 @@ function normalizeClassroomData(jsonData: any, subject: string, unit: string, le
             const audioFilename = `scene_${padScene}_speech_${padSpeech}.mp3`;
             
             act.audioUrl = `${baseTtsUrl}/${audioFilename}`;
-            act.workerAudioUrl = `/classrooms/${subject}/${uClean}/${lClean}/${classroomId}/tts/${audioFilename}`;
+            act.workerAudioUrl = act.audioUrl;
             speechIdx++;
           }
         });
@@ -976,45 +989,60 @@ export default {
     }
 
     // ── JWT Authentication (Option A) ──
-    // DISABLED for now: uncomment to re-enable private-bucket JWT gating.
-    // if (env.JWT_SECRET) {
-    //   // Printed pages, thumbnails, and public page scans are exempt from security
-    //   const isPublic =
-    //     p === '/' ||
-    //     p === '/api/health' ||
-    //     p.startsWith('/thumbnails/') ||
-    //     p.startsWith('/pages/') ||
-    //     p === '/printed-pages' ||
-    //     p === '/api/printed-pages' ||
-    //     p.startsWith('/lesson/');
-    //
-    //   if (!isPublic) {
-    //     const token = extractJwtFromRequest(req);
-    //     if (!token) {
-    //       return jsonResponse({
-    //         status: 'error',
-    //         code: 'UNAUTHORIZED',
-    //         error: 'Authentication required. Please provide a valid signed JWT token.',
-    //       }, 401);
-    //     }
-    //     const verification = await verifyJwt(token, env.JWT_SECRET);
-    //     if (!verification.valid || !verification.payload) {
-    //       return jsonResponse({
-    //         status: 'error',
-    //         code: 'INVALID_TOKEN',
-    //         error: verification.error || 'Invalid or expired JWT token',
-    //       }, 401);
-    //     }
-    //     const subjectParam = url.searchParams.get('subject') || '';
-    //     if (subjectParam && !isCourseAuthorized(verification.payload, subjectParam)) {
-    //       return jsonResponse({
-    //         status: 'error',
-    //         code: 'FORBIDDEN',
-    //         error: `Access to course subject '${subjectParam}' is not permitted for this user account.`,
-    //       }, 403);
-    //     }
-    //   }
-    // }
+    // Printed pages, thumbnails, public scans, and health discovery remain public.
+    const authRequired = Boolean(env.JWT_SECRET) || isEnabled(env.REQUIRE_AUTH);
+    const isPublic =
+      p === '/' ||
+      p === '/api/health' ||
+      p.startsWith('/thumbnails/') ||
+      p.startsWith('/pages/') ||
+      p === '/printed-pages' ||
+      p === '/api/printed-pages' ||
+      p.startsWith('/lesson/') ||
+      p === '/api/thumbnails';
+
+    if (authRequired && !isPublic) {
+      if (!env.JWT_SECRET) {
+        return jsonResponse({
+          status: 'error',
+          code: 'AUTH_NOT_CONFIGURED',
+          error: 'Authentication is required but JWT_SECRET is not configured on this deployment.',
+        }, 503);
+      }
+
+      const token = extractJwtFromRequest(req);
+      if (!token) {
+        return jsonResponse({
+          status: 'error',
+          code: 'UNAUTHORIZED',
+          error: 'Authentication required. Provide a signed JWT in Authorization, ?token=, or jwt_token cookie.',
+        }, 401);
+      }
+
+      const verification = await verifyJwt(token, env.JWT_SECRET);
+      if (!verification.valid || !verification.payload) {
+        return jsonResponse({
+          status: 'error',
+          code: 'INVALID_TOKEN',
+          error: verification.error || 'Invalid or expired JWT token',
+        }, 401);
+      }
+
+      const pathSegments = p.split('/').filter(Boolean);
+      const subjectParam = url.searchParams.get('subject') ||
+        (pathSegments[0] === 'api' && pathSegments[1] === 'courses'
+          ? (pathSegments[2] === 'classrooms' ? pathSegments[3] : pathSegments[2])
+          : pathSegments[0] === 'classroom' && pathSegments.length >= 4
+            ? pathSegments[1]
+            : '');
+      if (subjectParam && !isCourseAuthorized(verification.payload, subjectParam)) {
+        return jsonResponse({
+          status: 'error',
+          code: 'FORBIDDEN',
+          error: `Access to course subject '${subjectParam}' is not permitted for this user account.`,
+        }, 403);
+      }
+    }
 
     // ── 1. Health & Discovery API ──────────────────────────────────────
     if (p === '/' || p === '/api/health') {
@@ -1356,10 +1384,15 @@ export default {
         const listed = await env.COURSES_IMAGES.list({ prefix: 'thumbnails/', limit: 1000 });
         keys = listed.objects.map(o => o.key);
       } else {
-        const r2Url = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/coursesimages?prefix=thumbnails%2F&max-keys=1000`;
-        const res = await S3_IMAGES_CLIENT.fetch(r2Url);
-        const xml = await res.text();
-        keys = [...xml.matchAll(/<Key>(.*?)<\/Key>/g)].map(m => m[1]);
+        const s3Client = getS3Client(env);
+        if (s3Client) {
+          const r2Url = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/coursesimages?prefix=thumbnails%2F&max-keys=1000`;
+          const res = await s3Client.fetch(r2Url);
+          if (res.ok) {
+            const xml = await res.text();
+            keys = [...xml.matchAll(/<Key>(.*?)<\/Key>/g)].map(m => m[1]);
+          }
+        }
       }
 
       let thumbs = keys.map(k => {

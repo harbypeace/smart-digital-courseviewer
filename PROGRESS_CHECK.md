@@ -1,0 +1,2 @@
+
+The authenticated Pages runtime was tested with a temporary JWT allowing `hadith11` and `adb10p1`. Without public fixture fallback, the HTML resolver correctly failed because the simulated R2 bucket was empty; after enabling `ALLOW_PUBLIC_R2_FALLBACK=true` only in `.dev.vars`, the same authenticated `/html` URL loaded the real Arabic lesson iframe successfully. The resulting UI showed the lesson navigation, search, read-aloud, print, PDF, and share controls, with no error state. Production configuration remains `ALLOW_PUBLIC_R2_FALLBACK=false`.

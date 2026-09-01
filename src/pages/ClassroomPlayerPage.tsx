@@ -7,7 +7,7 @@ import {
   loadUniversalFromClassId,
   revokeUniversalUrls,
 } from '../lib/universal-loader';
-import { cleanUnitCode, cleanLessonCode, PRIVATE_COURSES_PROXY } from '../lib/utils';
+import { appendAuthToken, cleanUnitCode, cleanLessonCode, PRIVATE_COURSES_PROXY } from '../lib/utils';
 import {
   Loader2,
   AlertCircle,
@@ -104,8 +104,8 @@ function applyVoiceSource(
   const u = cleanUnitCode(unit);
   const l = cleanLessonCode(lesson);
   const cId = classId || clone.id || 'classroom';
-  const baseTts = `/api/courses/classrooms/${subject}/${u}/${l}/${cId}/tts`;
-  const defaultZip = zipUrl || `/api/courses/classrooms/${subject}/${u}/${l}/${cId}/classroom.zip`;
+  const baseTts = appendAuthToken(`/api/courses/classrooms/${subject}/${u}/${l}/${cId}/tts`);
+  const defaultZip = appendAuthToken(zipUrl || `/api/courses/classrooms/${subject}/${u}/${l}/${cId}/classroom.zip`);
 
   if (Array.isArray(clone.scenes)) {
     clone.scenes.forEach((sc: any, scIdx: number) => {
@@ -126,7 +126,7 @@ function applyVoiceSource(
               // Original ZIP audio
               const origFile = act.audioRef || act.audioId || `scene_${padScene}_speech_${padSpeech}`;
               const cleanName = origFile.endsWith('.mp3') ? origFile : `${origFile}.mp3`;
-              act.audioUrl = `/api/classroom-zip/media?zip=${encodeURIComponent(defaultZip)}&file=audio/${encodeURIComponent(cleanName)}`;
+              act.audioUrl = appendAuthToken(`/api/classroom-zip/media?zip=${encodeURIComponent(defaultZip)}&file=audio/${encodeURIComponent(cleanName)}`);
             }
             speechIdx++;
           }
@@ -238,7 +238,7 @@ export function ClassroomPlayerPage() {
     setClassroomId(classId);
     setCurrentZipUrl(zipUrl || undefined);
 
-    const calculatedMediaBase = `/api/courses/classrooms/${subject}/${unit}/${lesson}/${classId}/`;
+    const calculatedMediaBase = appendAuthToken(`/api/courses/classrooms/${subject}/${unit}/${lesson}/${classId}/`);
     setMediaBaseUrl(calculatedMediaBase);
 
     try {
@@ -258,7 +258,7 @@ export function ClassroomPlayerPage() {
       // 2. If explicit JSON URL provided
       if (jsonUrl) {
         setLoadingMsg('جاري تحميل ملف JSON...');
-        const res = await fetch(jsonUrl);
+        const res = await fetch(appendAuthToken(jsonUrl));
         if (!res.ok) throw new Error(`فشل تحميل JSON: ${res.status}`);
         const text = await res.text();
         const d = await loadUniversalFromJson(text);
@@ -280,7 +280,7 @@ export function ClassroomPlayerPage() {
           ...(classId ? { id: classId } : {}),
         });
 
-        const apiRes = await fetch(`/api/classroom-data?${query.toString()}`);
+        const apiRes = await fetch(appendAuthToken(`/api/classroom-data?${query.toString()}`));
         if (apiRes.ok) {
           const resJson = (await apiRes.json()) as any;
           if (resJson?.data) {
@@ -299,7 +299,7 @@ export function ClassroomPlayerPage() {
         // 4. Direct private proxy candidates fallback
         if (subject && classId) {
           const directProxyUrl = `${PRIVATE_COURSES_PROXY}/classrooms/${subject}/${unit}/${lesson}/${classId}/classdata.json`;
-          const directRes = await fetch(directProxyUrl);
+          const directRes = await fetch(appendAuthToken(directProxyUrl));
           if (directRes.ok) {
             const text = await directRes.text();
             const d = await loadUniversalFromJson(text);
@@ -399,7 +399,7 @@ export function ClassroomPlayerPage() {
           pitch: speechPitch,
         };
 
-        const res = await fetch('/api/custom-voice', {
+        const res = await fetch(appendAuthToken('/api/custom-voice'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -409,7 +409,7 @@ export function ClassroomPlayerPage() {
           const resData = await res.json();
           const actionKey = `${selectedSceneForUpload}_${selectedSpeechForUpload}`;
           const newMap = new Map(customAudioMap);
-          newMap.set(actionKey, resData.audioUrl || base64);
+          newMap.set(actionKey, resData.audioUrl ? appendAuthToken(resData.audioUrl) : base64);
           setCustomAudioMap(newMap);
 
           if (rawData) {
@@ -437,7 +437,7 @@ export function ClassroomPlayerPage() {
   const handleApplyVoiceProfile = async () => {
     setIsUploadingVoice(true);
     try {
-      const res = await fetch('/api/custom-voice', {
+      const res = await fetch(appendAuthToken('/api/custom-voice'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

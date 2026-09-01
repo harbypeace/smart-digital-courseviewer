@@ -9,21 +9,15 @@
  */
 
 import JSZip from 'jszip';
-import { AwsClient } from 'aws4fetch';
+import { authorizeRequest, getSubjectFromRequest, type AuthEnv } from '../../lib/auth';
 
-interface Env {
+interface Env extends AuthEnv {
   COURSES?: R2Bucket;
   HARBY?: R2Bucket;
+  ALLOW_PUBLIC_R2_FALLBACK?: string;
 }
 
-const R2_ACCOUNT_ID = '656055b2b0eea86b43dd2fd4853c100f';
-
-const S3_COURSES_CLIENT = new AwsClient({
-  accessKeyId: 'f942f0be0f3d93ab1e338b10e896bd78',
-  secretAccessKey: 'b7b862585c23e3fa2149ee0a919ba7a3f4c6bc0992d8f3cbc0b1a4f9c2ad55aa',
-  service: 's3',
-  region: 'auto',
-});
+const PUBLIC_R2_COURSES = 'https://pub-a7d6ac39d1654484ad48d9a264e93d51.r2.dev';
 
 function getMimeType(filePath: string): string {
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
@@ -45,8 +39,27 @@ function getMimeType(filePath: string): string {
   return mimeMap[ext] || 'application/octet-stream';
 }
 
+function isEnabled(value?: string): boolean {
+  return value === '1' || value?.toLowerCase() === 'true' || value?.toLowerCase() === 'yes';
+}
+
+function cleanPath(value: string): string | null {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch (_error) {
+    return null;
+  }
+  const clean = decoded.replace(/^\/+/, '');
+  if (!clean || clean.includes('\\') || /[\u0000-\u001f\u007f]/.test(clean)) return null;
+  if (clean.split('/').some((segment) => segment === '.' || segment === '..')) return null;
+  return clean;
+}
+
 async function fetchZipBuffer(requestUrl: URL, zipParam: string, env: Env): Promise<ArrayBuffer | null> {
-  const cleanZip = zipParam.replace(/^\/+/, '');
+  const cleanZip = cleanPath(zipParam);
+
+  if (!cleanZip) return null;
 
   // 1. If relative to origin (e.g. /samples/test-classroom.zip)
   if (zipParam.startsWith('/') || zipParam.startsWith('./') || zipParam.startsWith('samples/')) {
@@ -73,12 +86,14 @@ async function fetchZipBuffer(requestUrl: URL, zipParam: string, env: Env): Prom
     } catch (_e) {}
   }
 
-  // 4. From public R2 dev domain
-  try {
-    const publicUrl = `https://pub-a7d6ac39d1654484ad48d9a264e93d51.r2.dev/${encodeURI(cleanZip).replace(/%2F/g, '/')}`;
-    const pubRes = await fetch(publicUrl, { method: 'GET' });
-    if (pubRes.ok) return await pubRes.arrayBuffer();
-  } catch (_e) {}
+  // 4. From public R2 dev domain, only when explicitly enabled for diagnostics.
+  if (isEnabled(env.ALLOW_PUBLIC_R2_FALLBACK)) {
+    try {
+      const publicUrl = `${PUBLIC_R2_COURSES}/${encodeURI(cleanZip).replace(/%2F/g, '/')}`;
+      const pubRes = await fetch(publicUrl, { method: 'GET' });
+      if (pubRes.ok) return await pubRes.arrayBuffer();
+    } catch (_e) {}
+  }
 
   return null;
 }
@@ -90,6 +105,9 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
   const zipParam = url.searchParams.get('zip') || url.searchParams.get('zipUrl') || '';
   const fileParam = url.searchParams.get('file') || '';
+
+  const auth = await authorizeRequest(request, env, getSubjectFromRequest(request));
+  if (auth.response) return auth.response;
 
   if (!zipParam) {
     return new Response(JSON.stringify({ error: 'Missing required "zip" query parameter' }), {
@@ -107,13 +125,6 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       });
     }
 
-    // Check Cloudflare edge cache
-    const cacheKey = new Request(url.toString(), request);
-    const cache = (caches as any).default;
-    if (cache && request.method === 'GET' && !request.headers.get('Range')) {
-      const cached = await cache.match(cacheKey);
-      if (cached) return cached;
-    }
 
     const zipBuffer = await fetchZipBuffer(url, zipParam, env);
     if (!zipBuffer) {
@@ -124,7 +135,13 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     }
 
     const zip = await JSZip.loadAsync(zipBuffer);
-    const cleanFileName = fileParam.replace(/^\/+/, '');
+    const cleanFileName = cleanPath(fileParam);
+    if (!cleanFileName) {
+      return new Response(JSON.stringify({ error: 'Invalid file path' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     const candidateFiles = [
       cleanFileName,
       fileParam,
@@ -185,7 +202,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
           'Content-Range': `bytes ${start}-${end}/${totalSize}`,
           'Content-Length': String(chunk.byteLength),
           'Accept-Ranges': 'bytes',
-          'Cache-Control': 'public, max-age=86400',
+          'Cache-Control': 'private, max-age=3600',
         },
       });
     }
@@ -196,14 +213,10 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         'Content-Type': contentType,
         'Content-Length': String(totalSize),
         'Accept-Ranges': 'bytes',
-        'Cache-Control': 'public, max-age=86400',
+        'Cache-Control': 'private, max-age=3600',
         'ETag': `W/"zip-${totalSize}-${matchedFile.name}"`,
       },
     });
-
-    if (cache && request.method === 'GET') {
-      context.waitUntil(cache.put(cacheKey, response.clone()));
-    }
 
     return response;
   }
@@ -243,11 +256,13 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     });
   }
 
-  // Helper to construct lazy media stream URL
+  // Helper to construct lazy media stream URLs while preserving iframe/query-token auth.
+  const authToken = url.searchParams.get('token') || url.searchParams.get('jwt');
   const buildMediaUrl = (fileRef: string) => {
     if (!fileRef || /^(http|data:|blob:)/.test(fileRef)) return fileRef;
     const cleanRef = fileRef.replace(/^\/+/, '');
-    return `/api/classroom-zip/media?zip=${encodeURIComponent(zipParam)}&file=${encodeURIComponent(cleanRef)}`;
+    const mediaUrl = `/api/classroom-zip/media?zip=${encodeURIComponent(zipParam)}&file=${encodeURIComponent(cleanRef)}`;
+    return authToken ? `${mediaUrl}&token=${encodeURIComponent(authToken)}` : mediaUrl;
   };
 
   // Rewrite slide images & videos
@@ -284,7 +299,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     status: 200,
     headers: {
       'Content-Type': 'application/json',
-      'Cache-Control': 'public, max-age=3600',
+      'Cache-Control': 'private, max-age=3600',
     },
   });
 };

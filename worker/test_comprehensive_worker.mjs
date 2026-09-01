@@ -5,7 +5,8 @@ async function runComprehensiveTests() {
   console.log('🧪 RUNNING COMPREHENSIVE CLOUDFLARE WORKER TEST SUITE');
   console.log('════════════════════════════════════════════════════════════════════════════\n');
 
-  const mockEnv = {};
+  // The suite uses public fixtures intentionally; production deployments must keep this flag false.
+  const mockEnv = { ALLOW_PUBLIC_R2_FALLBACK: 'true' };
   let passed = 0;
   let failed = 0;
   const tests = [];

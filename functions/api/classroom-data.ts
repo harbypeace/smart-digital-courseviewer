@@ -3,21 +3,15 @@
  * Resolves classroom scenes and normalizes audio TTS paths to the secure proxy.
  */
 
-import { AwsClient } from 'aws4fetch';
+import { authorizeRequest, type AuthEnv } from '../lib/auth';
 
-interface Env {
+interface Env extends AuthEnv {
   COURSES?: R2Bucket;
   HARBY?: R2Bucket;
+  ALLOW_PUBLIC_R2_FALLBACK?: string;
 }
 
-const R2_ACCOUNT_ID = '656055b2b0eea86b43dd2fd4853c100f';
-
-const S3_COURSES_CLIENT = new AwsClient({
-  accessKeyId: 'f942f0be0f3d93ab1e338b10e896bd78',
-  secretAccessKey: 'b7b862585c23e3fa2149ee0a919ba7a3f4c6bc0992d8f3cbc0b1a4f9c2ad55aa',
-  service: 's3',
-  region: 'auto',
-});
+const PUBLIC_R2_COURSES = 'https://pub-a7d6ac39d1654484ad48d9a264e93d51.r2.dev';
 
 function cleanUnitCode(unit?: string): string {
   if (!unit) return 'u1';
@@ -29,6 +23,15 @@ function cleanLessonCode(lesson?: string): string {
   if (!lesson) return 'l1';
   const match = lesson.match(/[cl](\d+)$/i);
   return match ? `l${match[1]}` : lesson.replace(/.*_/, '');
+}
+
+function isEnabled(value?: string): boolean {
+  return value === '1' || value?.toLowerCase() === 'true' || value?.toLowerCase() === 'yes';
+}
+
+function safePart(value: string, fallback = ''): string {
+  const candidate = value.trim();
+  return /^[A-Za-z0-9_-]+$/.test(candidate) ? candidate : fallback;
 }
 
 async function fetchCoursesJson(env: Env, key: string): Promise<any | null> {
@@ -43,13 +46,15 @@ async function fetchCoursesJson(env: Env, key: string): Promise<any | null> {
     } catch (_e) {}
   }
 
-  try {
-    const publicUrl = `https://pub-a7d6ac39d1654484ad48d9a264e93d51.r2.dev/${encodeURI(cleanKey).replace(/%2F/g, '/')}`;
-    const pubRes = await fetch(publicUrl, { method: 'GET' });
-    if (pubRes.ok) {
-      return await pubRes.json();
-    }
-  } catch (_e) {}
+  if (isEnabled(env.ALLOW_PUBLIC_R2_FALLBACK)) {
+    try {
+      const publicUrl = `${PUBLIC_R2_COURSES}/${encodeURI(cleanKey).replace(/%2F/g, '/')}`;
+      const pubRes = await fetch(publicUrl, { method: 'GET' });
+      if (pubRes.ok) {
+        return await pubRes.json();
+      }
+    } catch (_e) {}
+  }
 
   return null;
 }
@@ -111,20 +116,23 @@ export const onRequest: PagesFunction<Env> = async (context) => {
   const { request, env } = context;
   const url = new URL(request.url);
 
-  let subject = url.searchParams.get('subject') || '';
-  let unit = cleanUnitCode(url.searchParams.get('unit') || 'u1');
-  let lesson = cleanLessonCode(url.searchParams.get('lesson') || 'l1');
-  let classroomId = url.searchParams.get('id') || url.searchParams.get('classroomId') || '';
+  let subject = safePart(url.searchParams.get('subject') || '');
+  let unit = safePart(cleanUnitCode(url.searchParams.get('unit') || 'u1'), 'u1');
+  let lesson = safePart(cleanLessonCode(url.searchParams.get('lesson') || 'l1'), 'l1');
+  let classroomId = safePart(url.searchParams.get('id') || url.searchParams.get('classroomId') || '');
 
   if (request.method === 'POST') {
     try {
       const body = await request.json() as any;
-      if (body.subject) subject = body.subject;
-      if (body.unit) unit = cleanUnitCode(body.unit);
-      if (body.lesson) lesson = cleanLessonCode(body.lesson);
-      if (body.id || body.classroomId) classroomId = body.id || body.classroomId;
+      if (body.subject) subject = safePart(String(body.subject));
+      if (body.unit) unit = safePart(cleanUnitCode(String(body.unit)), 'u1');
+      if (body.lesson) lesson = safePart(cleanLessonCode(String(body.lesson)), 'l1');
+      if (body.id || body.classroomId) classroomId = safePart(String(body.id || body.classroomId));
     } catch (_e) {}
   }
+
+  const auth = await authorizeRequest(request, env, subject);
+  if (auth.response) return auth.response;
 
   if (!classroomId && !subject) {
     return new Response(JSON.stringify({ error: 'Missing subject or classroomId parameter' }), {

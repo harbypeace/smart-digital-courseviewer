@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && npm run typecheck:functions && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "typecheck:functions": "tsc --noEmit -p tsconfig.functions.json",
+    "test:auth": "node test_pages_auth.mjs",
     "patch:packages": "node patch_packages.mjs",
     "pages:dev": "wrangler pages dev dist --r2=COURSES=courses --r2=HARBY=harby",
     "multitest": "node test_multiple_classrooms.mjs",
@@ -19,11 +21,13 @@
     "@openmaic/viewer": "file:./packages/@openmaic/viewer",
     "aws4fetch": "^1.0.20",
     "clsx": "^2.1.1",
+    "echarts": "^6.1.0",
     "jszip": "^3.10.1",
     "lucide-react": "^1.24.0",
     "motion": "^12.42.2",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "shiki": "^4.4.3",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
@@ -35,6 +39,7 @@
     "autoprefixer": "^10.4.20",
     "postcss": "^8.5.1",
     "tailwindcss": "^3.4.17",
+    "tsx": "^4.23.13",
     "typescript": "~5.8.2",
     "vite": "^8.1.1",
     "wrangler": "^3.114.0"

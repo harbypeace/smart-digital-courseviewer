@@ -6,6 +6,21 @@ The base URL for these endpoints is your production domain (e.g., `https://cours
 
 ---
 
+## Authentication and storage defaults
+
+When `JWT_SECRET` is configured on the Pages deployment, all classroom, HTML lesson, course-proxy, ZIP, and custom-voice endpoints require a valid signed HS256 JWT. Printed pages, public page images, thumbnails, the catalog, and health discovery remain public. A token may be supplied through an `Authorization: Bearer <token>` header, the `?token=<token>` query parameter used by iframe/audio embeds, or a `jwt_token` cookie.
+
+The token payload may include `role: "teacher"` or `role: "admin"` for unrestricted access, or `allowedCourses: ["adb10p1", "bio10p1"]` to restrict access by subject. Configure `ALLOW_PUBLIC_R2_FALLBACK=false` in production; public R2 fallback is available only as an explicit migration diagnostic option.
+
+```bash
+curl -H "Authorization: Bearer $COURSEVIEWER_JWT" \
+  "https://courseviewer.lms-yemen.com/api/classroom-data?subject=adb10p1&unit=u1&lesson=l1&id=1v_nRmh_wh"
+```
+
+If `REQUIRE_AUTH=true` is set without `JWT_SECRET`, protected requests fail closed with `AUTH_NOT_CONFIGURED` rather than falling back to anonymous access.
+
+---
+
 ## 1. Classroom Data Resolver
 **Endpoint:** `/api/classroom-data`  
 **Methods:** `GET`, `POST`
@@ -147,7 +162,22 @@ Simulates generating a TTS preview for arbitrary text.
 
 ---
 
-## 5. Printed Book Pages Reader
+## 5. Interactive HTML Lesson Viewer
+**Endpoint:** `/html` (query-param route)
+**Methods:** `GET`
+
+The React viewer resolves the supplied lesson file through the private courses proxy and renders the lesson in an iframe. It tries an explicit `file` first, then the repository’s standard subject/folder naming conventions.
+
+```bash
+# The token may also be supplied through an Authorization header in a normal API client.
+open "https://courseviewer.lms-yemen.com/html?subject=hadith11&unit=u1&lesson=l1&file=hadith11/hadith11_u1l1.html&token=$COURSEVIEWER_JWT"
+```
+
+The iframe source is kept same-origin so its relative CSS, JavaScript, image, and audio references continue to resolve through the protected proxy. Use the viewer toolbar to retry resolution or open the resolved lesson in a separate tab.
+
+---
+
+## 6. Printed Book Pages Reader
 **Endpoint:** `/printed-pages` (or `/api/printed-pages`)  
 **Methods:** `GET`
 
