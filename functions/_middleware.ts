@@ -32,6 +32,10 @@ function withCors(response: Response, request: Request, env: Env): Response {
   for (const [key, value] of Object.entries(getCorsHeaders(request, env))) {
     headers.set(key, value);
   }
+  headers.set('Referrer-Policy', 'no-referrer');
+  headers.set('X-Content-Type-Options', 'nosniff');
+  headers.set('X-Frame-Options', 'SAMEORIGIN');
+  headers.set('Permissions-Policy', 'camera=(), geolocation=(), microphone=()');
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
