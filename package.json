@@ -11,6 +11,7 @@
     "typecheck:functions": "tsc --noEmit -p tsconfig.functions.json",
     "test:auth": "node test_pages_auth.mjs",
     "test:security": "node test_security_headers.mjs",
+    "test:health": "node test_pages_health.mjs",
     "patch:packages": "node patch_packages.mjs",
     "pages:dev": "wrangler pages dev dist --r2=COURSES=courses --r2=HARBY=harby",
     "multitest": "node test_multiple_classrooms.mjs",

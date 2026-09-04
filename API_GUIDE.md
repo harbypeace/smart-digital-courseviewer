@@ -21,7 +21,21 @@ If `REQUIRE_AUTH=true` is set without `JWT_SECRET`, protected requests fail clos
 
 ---
 
-## 1. Classroom Data Resolver
+## 1. Pages Health & Deployment Discovery
+**Endpoint:** `/api/health`
+**Methods:** `GET`, `HEAD`
+
+This public endpoint verifies that the Pages runtime is responding and reports non-sensitive deployment diagnostics. It does not expose JWT secrets, bucket names, object keys, or user data.
+
+```bash
+curl "https://courseviewer.lms-yemen.com/api/health"
+```
+
+The response includes the service version, timestamp, whether authentication is configured and required, and whether the expected R2 bindings are available. The response is marked `Cache-Control: no-store` so monitoring systems observe the current runtime state.
+
+---
+
+## 2. Classroom Data Resolver
 **Endpoint:** `/api/classroom-data`  
 **Methods:** `GET`, `POST`
 
@@ -55,7 +69,7 @@ curl "https://courseviewer.lms-yemen.com/api/classroom-data?subject=adb10p1&unit
 
 ---
 
-## 2. Secure Media Proxy (R2)
+## 3. Secure Media Proxy (R2)
 **Endpoint:** `/api/courses/*`  
 **Methods:** `GET`, `HEAD`
 
@@ -73,7 +87,7 @@ curl -I "https://courseviewer.lms-yemen.com/api/courses/classrooms/adb10p1/u1/l1
 
 ---
 
-## 3. ZIP File Streamer
+## 4. ZIP File Streamer
 **Endpoint:** `/api/classroom-zip/*`  
 **Methods:** `GET`
 
@@ -97,7 +111,7 @@ curl "https://courseviewer.lms-yemen.com/api/classroom-zip/media?zip=/samples/te
 
 ---
 
-## 4. Custom Voice & TTS Studio
+## 5. Custom Voice & TTS Studio
 **Endpoint:** `/api/custom-voice`  
 **Methods:** `GET`, `POST`  
 **CORS:** Enabled (`*`)
@@ -162,7 +176,7 @@ Simulates generating a TTS preview for arbitrary text.
 
 ---
 
-## 5. Interactive HTML Lesson Viewer
+## 6. Interactive HTML Lesson Viewer
 **Endpoint:** `/html` (query-param route)
 **Methods:** `GET`
 
@@ -177,7 +191,7 @@ The iframe source is kept same-origin so its relative CSS, JavaScript, image, an
 
 ---
 
-## 6. Printed Book Pages Reader
+## 7. Printed Book Pages Reader
 **Endpoint:** `/printed-pages` (or `/api/printed-pages`)  
 **Methods:** `GET`
 
