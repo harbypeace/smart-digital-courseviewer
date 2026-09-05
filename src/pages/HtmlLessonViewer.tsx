@@ -67,6 +67,16 @@ export function HtmlLessonViewer() {
           setIsResolving(false);
           return;
         }
+        if (response.status === 401) {
+          setIsResolving(false);
+          setError('انتهت صلاحية جلسة الوصول أو لم يتم تزويد رمز دخول صالح. أعد فتح الدرس برابط جلسة جديد.');
+          return;
+        }
+        if (response.status === 403) {
+          setIsResolving(false);
+          setError('لا تملك صلاحية الوصول إلى هذا المقرر أو الدرس. تواصل مع مسؤول النظام إذا كان ذلك غير متوقع.');
+          return;
+        }
       } catch (_error) {
         // Try the next naming convention.
       }
