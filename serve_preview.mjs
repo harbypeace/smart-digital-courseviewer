@@ -258,12 +258,13 @@ const server = http.createServer(async (req, res) => {
         const fetchRes = await fetch(zipParam);
         if (fetchRes.ok) zipBuffer = await fetchRes.arrayBuffer();
       } else {
-        const localZipPath = path.join(DIST_DIR, zipParam.replace(/^\/+/, ''));
+        const cleanedZipKey = zipParam.replace(/^\/?api\/courses\//, '').replace(/^\/+/, '');
+        const localZipPath = path.join(DIST_DIR, cleanedZipKey);
         if (fs.existsSync(localZipPath)) {
           zipBuffer = fs.readFileSync(localZipPath);
         } else {
           // Try S3
-          const s3Url = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/courses/${encodeURI(zipParam.replace(/^\/+/, '')).replace(/%2F/g, '/')}`;
+          const s3Url = `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/courses/${encodeURI(cleanedZipKey).replace(/%2F/g, '/')}`;
           const s3Res = await S3_COURSES_CLIENT.fetch(s3Url, { method: 'GET' });
           if (s3Res.ok) zipBuffer = await s3Res.arrayBuffer();
         }

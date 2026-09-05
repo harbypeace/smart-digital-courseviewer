@@ -18,8 +18,10 @@ interface SlideSceneProps {
 
 function resolveSrc(src: string | undefined, base?: string): string | undefined {
   if (!src) return src;
-  if (src.startsWith('http') || src.startsWith('data:') || src.startsWith('blob:')) return src;
-  return base ? `${base.replace(/\/$/, '')}/${src}` : src;
+  if (src.startsWith('http://') || src.startsWith('https://') || src.startsWith('data:') || src.startsWith('blob:') || src.startsWith('/')) {
+    return src;
+  }
+  return base ? `${base.replace(/\/$/, '')}/${src.replace(/^\//, '')}` : src;
 }
 
 export function SlideScene({ scene, effects, whiteboardOpen, whiteboardElements, darkMode, mediaBaseUrl, activeVisual }: SlideSceneProps) {

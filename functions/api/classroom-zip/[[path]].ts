@@ -60,8 +60,17 @@ async function fetchZipBuffer(requestUrl: URL, zipParam: string, env: Env): Prom
   const cleanZip = cleanPath(zipParam);
 
   if (!cleanZip) return null;
+  const r2Key = cleanZip.replace(/^api\/courses\//, '');
 
-  // 1. If relative to origin (e.g. /samples/test-classroom.zip)
+  // 1. Direct R2 COURSES bucket binding (Fastest & avoids subrequests)
+  if (env.COURSES) {
+    try {
+      const obj = await env.COURSES.get(r2Key) || await env.COURSES.get(cleanZip);
+      if (obj) return await obj.arrayBuffer();
+    } catch (_e) {}
+  }
+
+  // 2. If relative to origin (e.g. /samples/test-classroom.zip)
   if (zipParam.startsWith('/') || zipParam.startsWith('./') || zipParam.startsWith('samples/')) {
     const originUrl = new URL(zipParam.startsWith('/') ? zipParam : `/${cleanZip}`, requestUrl.origin);
     try {
@@ -70,7 +79,7 @@ async function fetchZipBuffer(requestUrl: URL, zipParam: string, env: Env): Prom
     } catch (_e) {}
   }
 
-  // 2. If full external URL
+  // 3. If full external URL
   if (zipParam.startsWith('http://') || zipParam.startsWith('https://')) {
     try {
       const res = await fetch(zipParam);
@@ -78,18 +87,10 @@ async function fetchZipBuffer(requestUrl: URL, zipParam: string, env: Env): Prom
     } catch (_e) {}
   }
 
-  // 3. From R2 COURSES bucket binding
-  if (env.COURSES) {
-    try {
-      const obj = await env.COURSES.get(cleanZip);
-      if (obj) return await obj.arrayBuffer();
-    } catch (_e) {}
-  }
-
   // 4. From public R2 dev domain, only when explicitly enabled for diagnostics.
   if (isEnabled(env.ALLOW_PUBLIC_R2_FALLBACK)) {
     try {
-      const publicUrl = `${PUBLIC_R2_COURSES}/${encodeURI(cleanZip).replace(/%2F/g, '/')}`;
+      const publicUrl = `${PUBLIC_R2_COURSES}/${encodeURI(r2Key).replace(/%2F/g, '/')}`;
       const pubRes = await fetch(publicUrl, { method: 'GET' });
       if (pubRes.ok) return await pubRes.arrayBuffer();
     } catch (_e) {}

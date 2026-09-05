@@ -15,7 +15,6 @@ import {
   Maximize2,
   Minimize2,
   Sparkles,
-  Upload,
   FileArchive,
   ListOrdered,
   MessageSquareQuote,
@@ -36,6 +35,9 @@ import {
   Volume2,
   Radio,
   Settings2,
+  Bot,
+  Zap,
+  Cpu,
 } from 'lucide-react';
 
 interface ErrorBoundaryProps {
@@ -89,6 +91,72 @@ class ClassroomErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundary
 /**
  * Normalizes audio URLs to either AI TTS Voiceovers or Original ZIP Audio
  */
+/**
+ * Deduplicates speech actions where the first leg was repeated during TTS generation
+ * or adjacent dialogue lines have repeated duplicate texts in the JSON.
+ */
+function deduplicateSpeechActions(scenes: any[]): void {
+  if (!Array.isArray(scenes) || scenes.length === 0) return;
+
+  const norm = (str: any) =>
+    typeof str === 'string'
+      ? str.trim().replace(/[\s\u200B-\u200D\uFEFF]+/g, ' ').toLowerCase()
+      : '';
+
+  // Identify first scene's opening speech if repeated across scenes
+  const scene0Speeches = (scenes[0]?.actions || []).filter(
+    (a: any) => a.type === 'speech' || a.type === 'speak' || a.text || a.speech
+  );
+  const scene0OpeningLeg = scene0Speeches.length > 0 ? norm(scene0Speeches[0].text || scene0Speeches[0].speech) : '';
+
+  scenes.forEach((sc: any, scIdx: number) => {
+    if (!Array.isArray(sc.actions)) return;
+
+    // Track speech actions and their indices in sc.actions
+    const speechIndices: number[] = [];
+    sc.actions.forEach((act: any, actIdx: number) => {
+      if (act.type === 'speech' || act.type === 'speak' || act.text || act.speech || act.audio || act.audioUrl) {
+        speechIndices.push(actIdx);
+      }
+    });
+
+    if (speechIndices.length < 2) return;
+
+    const toRemove = new Set<number>();
+
+    const firstAct = sc.actions[speechIndices[0]];
+    const secondAct = sc.actions[speechIndices[1]];
+    const t0 = norm(firstAct?.text || firstAct?.speech);
+    const t1 = norm(secondAct?.text || secondAct?.speech);
+
+    // 1. If first and second speech actions in the scene have identical text, remove the duplicate
+    if (t0 && t1 && t0 === t1) {
+      toRemove.add(speechIndices[1]);
+    }
+
+    // 2. If in subsequent scenes (scIdx > 0), the first speech repeats scene 0's opening leg
+    if (scIdx > 0 && scene0OpeningLeg && t0 && t0 === scene0OpeningLeg) {
+      toRemove.add(speechIndices[0]);
+    }
+
+    // 3. Check for any other adjacent duplicate speech actions in the scene
+    for (let i = 0; i < speechIndices.length - 1; i++) {
+      if (toRemove.has(speechIndices[i])) continue;
+      const actA = sc.actions[speechIndices[i]];
+      const actB = sc.actions[speechIndices[i + 1]];
+      const textA = norm(actA?.text || actA?.speech);
+      const textB = norm(actB?.text || actB?.speech);
+      if (textA && textB && textA === textB) {
+        toRemove.add(speechIndices[i + 1]);
+      }
+    }
+
+    if (toRemove.size > 0) {
+      sc.actions = sc.actions.filter((_: any, idx: number) => !toRemove.has(idx));
+    }
+  });
+}
+
 function applyVoiceSource(
   raw: ClassroomData,
   source: 'tts' | 'original' | 'custom',
@@ -108,16 +176,45 @@ function applyVoiceSource(
   const defaultZip = appendAuthToken(zipUrl || `/api/courses/classrooms/${subject}/${u}/${l}/${cId}/classroom.zip`);
 
   if (Array.isArray(clone.scenes)) {
+    deduplicateSpeechActions(clone.scenes);
     clone.scenes.forEach((sc: any, scIdx: number) => {
+      // 1. Normalize canvas images & videos
+      const canvasElements = sc?.content?.canvas?.elements;
+      if (Array.isArray(canvasElements)) {
+        canvasElements.forEach((el: any) => {
+          if ((el.type === 'image' || el.type === 'video') && el.src) {
+            const rawSrc = String(el.src).trim();
+            if (!rawSrc.startsWith('data:') && !rawSrc.startsWith('blob:')) {
+              const filename = rawSrc.split('/').pop()?.split('?')[0];
+              if (filename) {
+                // Check if imported into local public media or route via zip streamer
+                el.src = `/classroom-media/${cId}/media/${filename}`;
+              }
+            }
+          }
+        });
+      }
+
+      // 2. Normalize actions audio and visuals
       if (Array.isArray(sc.actions)) {
         let speechIdx = 0;
         sc.actions.forEach((act: any) => {
+          if (act.visualUrl) {
+            const rawVis = String(act.visualUrl).trim();
+            if (!rawVis.startsWith('data:') && !rawVis.startsWith('blob:')) {
+              const filename = rawVis.split('/').pop()?.split('?')[0];
+              if (filename) {
+                act.visualUrl = `/classroom-media/${cId}/media/${filename}`;
+              }
+            }
+          }
+
           if (act.type === 'speech' || act.type === 'speak' || act.audio || act.audioUrl) {
             const padScene = String(scIdx).padStart(2, '0');
             const padSpeech = String(speechIdx).padStart(2, '0');
             const actionKey = `${scIdx}_${speechIdx}`;
 
-            // Check if user uploaded a custom override for this speech
+            // Check if user uploaded or generated a custom override for this speech
             if (customAudioMap && customAudioMap.has(actionKey)) {
               act.audioUrl = customAudioMap.get(actionKey);
             } else if (source === 'tts') {
@@ -151,13 +248,111 @@ export function ClassroomPlayerPage() {
   // Playback & Sidebar State (Mutually Exclusive Sidebars)
   const [activeSceneIndex, setActiveSceneIndex] = useState(0);
   const [activeActionIndex, setActiveActionIndex] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(true);
+  const [navTarget, setNavTarget] = useState<{ scene: number; action: number }>({ scene: 0, action: 0 });
+  const [isPlaying, setIsPlaying] = useState(false);
   const [voiceSource, setVoiceSource] = useState<'tts' | 'original' | 'custom'>('tts');
+  const [hasTts, setHasTts] = useState<boolean>(true);
   const [showScriptPanel, setShowScriptPanel] = useState(true);
   const [showScenesSidebar, setShowScenesSidebar] = useState(false);
   const [showVoiceStudio, setShowVoiceStudio] = useState(false);
   const [scriptSearch, setScriptSearch] = useState('');
   const [copiedScript, setCopiedScript] = useState(false);
+
+  // Mobile responsiveness & 3-second script auto-hide
+  const [isMobile, setIsMobile] = useState(() => (typeof window !== 'undefined' ? window.innerWidth < 768 : false));
+  const scriptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const resetScriptAutoHide = useCallback(() => {
+    if (scriptTimerRef.current) {
+      clearTimeout(scriptTimerRef.current);
+      scriptTimerRef.current = null;
+    }
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      scriptTimerRef.current = setTimeout(() => {
+        setShowScriptPanel(false);
+      }, 3000);
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(() => {
+    if (showScriptPanel && isMobile) {
+      resetScriptAutoHide();
+    } else if (scriptTimerRef.current) {
+      clearTimeout(scriptTimerRef.current);
+      scriptTimerRef.current = null;
+    }
+    return () => {
+      if (scriptTimerRef.current) {
+        clearTimeout(scriptTimerRef.current);
+      }
+    };
+  }, [showScriptPanel, isMobile, resetScriptAutoHide]);
+
+  // Mobile landscape YouTube-style actions bar autohide
+  const [isMobileLandscape, setIsMobileLandscape] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.matchMedia('(orientation: landscape) and (max-height: 520px)').matches;
+  });
+  const [landscapeControlsVisible, setLandscapeControlsVisible] = useState(true);
+  const landscapeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const resetLandscapeAutoHide = useCallback(() => {
+    if (landscapeTimerRef.current) {
+      clearTimeout(landscapeTimerRef.current);
+      landscapeTimerRef.current = null;
+    }
+    if (isMobileLandscape) {
+      setLandscapeControlsVisible(true);
+      landscapeTimerRef.current = setTimeout(() => {
+        setLandscapeControlsVisible(false);
+      }, 3000);
+    }
+  }, [isMobileLandscape]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(orientation: landscape) and (max-height: 520px)');
+    const updateLandscape = () => {
+      const match = mq.matches;
+      setIsMobileLandscape(match);
+      if (match) {
+        setLandscapeControlsVisible(true);
+        resetLandscapeAutoHide();
+      } else {
+        setLandscapeControlsVisible(true);
+      }
+    };
+    updateLandscape();
+    mq.addEventListener('change', updateLandscape);
+    window.addEventListener('resize', updateLandscape);
+    return () => {
+      mq.removeEventListener('change', updateLandscape);
+      window.removeEventListener('resize', updateLandscape);
+      if (landscapeTimerRef.current) clearTimeout(landscapeTimerRef.current);
+    };
+  }, [resetLandscapeAutoHide]);
+
+  const handleRenderTap = useCallback(() => {
+    if (!isMobileLandscape) return;
+    setLandscapeControlsVisible((prev) => {
+      const nextVal = !prev;
+      if (nextVal) {
+        resetLandscapeAutoHide();
+      } else if (landscapeTimerRef.current) {
+        clearTimeout(landscapeTimerRef.current);
+        landscapeTimerRef.current = null;
+      }
+      return nextVal;
+    });
+  }, [isMobileLandscape, resetLandscapeAutoHide]);
 
   // Custom Voice Studio State
   const [customAudioMap, setCustomAudioMap] = useState<Map<string, string>>(new Map());
@@ -168,6 +363,17 @@ export function ClassroomPlayerPage() {
   const [selectedSpeechForUpload, setSelectedSpeechForUpload] = useState(0);
   const [isUploadingVoice, setIsUploadingVoice] = useState(false);
   const [voiceUploadSuccess, setVoiceUploadSuccess] = useState<string | null>(null);
+
+  // Large Model TTS Generation State (ElevenLabs / Gemini Light Format)
+  const [ttsProvider, setTtsProvider] = useState<'elevenlabs' | 'gemini'>('elevenlabs');
+  const [elevenLabsApiKey, setElevenLabsApiKey] = useState(() => {
+    return typeof window !== 'undefined' ? localStorage.getItem('ELEVENLABS_API_KEY') || '' : '';
+  });
+  const [geminiApiKey, setGeminiApiKey] = useState(() => {
+    return typeof window !== 'undefined' ? localStorage.getItem('GEMINI_API_KEY') || '' : '';
+  });
+  const [isGeneratingTts, setIsGeneratingTts] = useState(false);
+  const [ttsProgressMsg, setTtsProgressMsg] = useState('');
 
   // Query params
   const [subjectCode, setSubjectCode] = useState('adb10p1');
@@ -187,7 +393,14 @@ export function ClassroomPlayerPage() {
     try {
       const d = await loadUniversalFromZip(file);
       setRawData(d);
-      const withVoice = applyVoiceSource(d, voiceSource, subjectCode, unitCode, lessonCode, classroomId, currentZipUrl, customAudioMap);
+      const allSpeeches = (d.scenes || []).flatMap((s: any) =>
+        (s.actions || []).filter((a: any) => a.type === 'speech' || a.type === 'speak' || a.text || a.speech)
+      );
+      const ttsAvailable = allSpeeches.length > 0;
+      setHasTts(ttsAvailable);
+      const chosenVoice = ttsAvailable ? 'tts' : 'original';
+      setVoiceSource(chosenVoice);
+      const withVoice = applyVoiceSource(d, chosenVoice, subjectCode, unitCode, lessonCode, classroomId, currentZipUrl, customAudioMap);
       setData(withVoice);
       setActiveSceneIndex(0);
       setActiveActionIndex(0);
@@ -197,7 +410,7 @@ export function ClassroomPlayerPage() {
     } finally {
       setLoading(false);
     }
-  }, [voiceSource, subjectCode, unitCode, lessonCode, classroomId, currentZipUrl, customAudioMap]);
+  }, [subjectCode, unitCode, lessonCode, classroomId, currentZipUrl, customAudioMap]);
 
   const loadClassroom = useCallback(async () => {
     setLoading(true);
@@ -241,17 +454,49 @@ export function ClassroomPlayerPage() {
     const calculatedMediaBase = appendAuthToken(`/api/courses/classrooms/${subject}/${unit}/${lesson}/${classId}/`);
     setMediaBaseUrl(calculatedMediaBase);
 
+    const setupClassroomData = async (
+      raw: ClassroomData,
+      sub: string,
+      u: string,
+      l: string,
+      cId: string,
+      zUrl?: string
+    ) => {
+      setRawData(raw);
+
+      const allSpeeches = (raw.scenes || []).flatMap((s: any) =>
+        (s.actions || []).filter((a: any) => a.type === 'speech' || a.type === 'speak' || a.text || a.speech)
+      );
+
+      let ttsExists = false;
+      if (allSpeeches.length > 0) {
+        const testTtsUrl = `/api/courses/classrooms/${sub}/${u}/${l}/${cId}/tts/scene_00_speech_00.mp3`;
+        try {
+          const probe = await fetch(testTtsUrl, { method: 'HEAD' });
+          ttsExists = probe.ok;
+        } catch (_e) {
+          ttsExists = false;
+        }
+      }
+
+      setHasTts(ttsExists);
+      const chosenVoice = ttsExists ? 'tts' : 'original';
+      setVoiceSource(chosenVoice);
+
+      const withVoice = applyVoiceSource(raw, chosenVoice, sub, u, l, cId, zUrl, customAudioMap);
+      setData(withVoice);
+      setActiveSceneIndex(0);
+      setActiveActionIndex(0);
+      setNavTarget({ scene: 0, action: 0 });
+      setLoading(false);
+    };
+
     try {
       // 1. If explicit ZIP URL provided (Progressive Streaming)
       if (zipUrl) {
         setLoadingMsg('جاري تهيئة البث المباشر لحزمة الدرس (ZIP Streaming)...');
         const d = await loadUniversalFromZip(zipUrl);
-        setRawData(d);
-        const withVoice = applyVoiceSource(d, voiceSource, subject, unit, lesson, classId, zipUrl, customAudioMap);
-        setData(withVoice);
-        setActiveSceneIndex(0);
-        setActiveActionIndex(0);
-        setLoading(false);
+        await setupClassroomData(d, subject, unit, lesson, classId, zipUrl);
         return;
       }
 
@@ -262,12 +507,7 @@ export function ClassroomPlayerPage() {
         if (!res.ok) throw new Error(`فشل تحميل JSON: ${res.status}`);
         const text = await res.text();
         const d = await loadUniversalFromJson(text);
-        setRawData(d);
-        const withVoice = applyVoiceSource(d, voiceSource, subject, unit, lesson, classId, zipUrl || undefined, customAudioMap);
-        setData(withVoice);
-        setActiveSceneIndex(0);
-        setActiveActionIndex(0);
-        setLoading(false);
+        await setupClassroomData(d, subject, unit, lesson, classId, zipUrl || undefined);
         return;
       }
 
@@ -286,12 +526,7 @@ export function ClassroomPlayerPage() {
           if (resJson?.data) {
             const raw = resJson.data;
             const parsed = raw.stage && Array.isArray(raw.scenes) ? (raw as ClassroomData) : await loadUniversalFromJson(JSON.stringify(raw));
-            setRawData(parsed);
-            const withVoice = applyVoiceSource(parsed, voiceSource, subject, unit, lesson, classId, zipUrl || undefined, customAudioMap);
-            setData(withVoice);
-            setActiveSceneIndex(0);
-            setActiveActionIndex(0);
-            setLoading(false);
+            await setupClassroomData(parsed, subject, unit, lesson, classId, zipUrl || undefined);
             return;
           }
         }
@@ -303,12 +538,7 @@ export function ClassroomPlayerPage() {
           if (directRes.ok) {
             const text = await directRes.text();
             const d = await loadUniversalFromJson(text);
-            setRawData(d);
-            const withVoice = applyVoiceSource(d, voiceSource, subject, unit, lesson, classId, zipUrl || undefined, customAudioMap);
-            setData(withVoice);
-            setActiveSceneIndex(0);
-            setActiveActionIndex(0);
-            setLoading(false);
+            await setupClassroomData(d, subject, unit, lesson, classId, zipUrl || undefined);
             return;
           }
         }
@@ -316,12 +546,7 @@ export function ClassroomPlayerPage() {
         // 5. Fallback via classId loader
         if (classId) {
           const d = await loadUniversalFromClassId(classId);
-          setRawData(d);
-          const withVoice = applyVoiceSource(d, voiceSource, subject, unit, lesson, classId, zipUrl || undefined, customAudioMap);
-          setData(withVoice);
-          setActiveSceneIndex(0);
-          setActiveActionIndex(0);
-          setLoading(false);
+          await setupClassroomData(d, subject, unit, lesson, classId, zipUrl || undefined);
           return;
         }
       }
@@ -334,7 +559,7 @@ export function ClassroomPlayerPage() {
     } finally {
       setLoading(false);
     }
-  }, [voiceSource, customAudioMap]);
+  }, [customAudioMap]);
 
   useEffect(() => {
     loadClassroom();
@@ -345,6 +570,7 @@ export function ClassroomPlayerPage() {
 
   // Handle voice source switch
   const switchVoiceSource = (newSource: 'tts' | 'original' | 'custom') => {
+    if (!hasTts && newSource === 'tts') return;
     if (newSource === voiceSource) return;
     setVoiceSource(newSource);
     if (rawData) {
@@ -368,6 +594,9 @@ export function ClassroomPlayerPage() {
     if (!showScriptPanel) {
       setShowScriptPanel(true);
       setShowScenesSidebar(false);
+      if (isMobile) {
+        resetScriptAutoHide();
+      }
     } else {
       setShowScriptPanel(false);
     }
@@ -466,6 +695,104 @@ export function ClassroomPlayerPage() {
     }
   };
 
+  // Generate High-Quality Lightweight TTS via ElevenLabs or Gemini POST API
+  const handleGenerateLargeModelTts = async () => {
+    const key = ttsProvider === 'elevenlabs' ? elevenLabsApiKey.trim() : geminiApiKey.trim();
+    if (!key) {
+      alert(`يرجى إدخال مفتاح API الخاص بـ ${ttsProvider === 'elevenlabs' ? 'ElevenLabs' : 'Gemini'} للمتابعة.`);
+      return;
+    }
+
+    if (ttsProvider === 'elevenlabs') {
+      localStorage.setItem('ELEVENLABS_API_KEY', key);
+    } else {
+      localStorage.setItem('GEMINI_API_KEY', key);
+    }
+
+    if (!rawData || !Array.isArray(rawData.scenes)) {
+      alert('لم يتم تحميل بيانات الدرس بعد.');
+      return;
+    }
+
+    // Collect speeches after deduplication
+    const scenesToProcess = JSON.parse(JSON.stringify(rawData.scenes));
+    deduplicateSpeechActions(scenesToProcess);
+
+    const speechItems: { sceneIdx: number; speechIdx: number; text: string }[] = [];
+    scenesToProcess.forEach((sc: any, scIdx: number) => {
+      let spIdx = 0;
+      (sc.actions || []).forEach((act: any) => {
+        if (act.type === 'speech' || act.type === 'speak' || act.text || act.speech) {
+          const txt = (act.text || act.speech || '').trim();
+          if (txt) {
+            speechItems.push({ sceneIdx: scIdx, speechIdx: spIdx, text: txt });
+          }
+          spIdx++;
+        }
+      });
+    });
+
+    if (speechItems.length === 0) {
+      alert('لا توجد نصوص حوارية في هذا الدرس لتوليد الصوت.');
+      return;
+    }
+
+    setIsGeneratingTts(true);
+    setTtsProgressMsg(`جاري التجهيز لتوليد ${speechItems.length} مقطع صوتي خفيف الحجم...`);
+
+    let successCount = 0;
+    try {
+      for (let i = 0; i < speechItems.length; i++) {
+        const item = speechItems[i];
+        setTtsProgressMsg(`جاري التوليد (${i + 1}/${speechItems.length}): مشهد ${item.sceneIdx + 1} - حوار ${item.speechIdx + 1}...`);
+
+        const res = await fetch('/api/custom-voice', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'generate_tts',
+            provider: ttsProvider,
+            apiKey: key,
+            subject: subjectCode,
+            unit: unitCode,
+            lesson: lessonCode,
+            classroomId,
+            sceneIndex: item.sceneIdx,
+            speechIndex: item.speechIdx,
+            text: item.text,
+            replaceOriginalTts: true,
+          }),
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({ error: 'فشل الطلب' }));
+          throw new Error(errData.error || `خطأ من الخادم: HTTP ${res.status}`);
+        }
+
+        successCount++;
+      }
+
+      setHasTts(true);
+      setVoiceSource('tts');
+      if (rawData) {
+        const updated = applyVoiceSource(rawData, 'tts', subjectCode, unitCode, lessonCode, classroomId, currentZipUrl, customAudioMap);
+        setData(updated);
+      }
+
+      setVoiceUploadSuccess(`تم توليد واستبدال ${successCount} مقطع صوتي فائق الجودة وخفيف الحجم بنجاح!`);
+      setTimeout(() => {
+        setVoiceUploadSuccess(null);
+        setShowVoiceStudio(false);
+      }, 2500);
+    } catch (err: any) {
+      console.error('Large Model TTS Generation Error:', err);
+      alert('حدث خطأ أثناء توليد الصوت: ' + (err?.message || 'خطأ غير متوقع'));
+    } finally {
+      setIsGeneratingTts(false);
+      setTtsProgressMsg('');
+    }
+  };
+
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
       containerRef.current?.requestFullscreen().catch(() => {});
@@ -479,25 +806,39 @@ export function ClassroomPlayerPage() {
   const jumpToScene = (idx: number) => {
     setActiveSceneIndex(idx);
     setActiveActionIndex(0);
+    setNavTarget({ scene: idx, action: 0 });
     setShowScenesSidebar(false);
     setShowScriptPanel(true);
+    if (isMobile) {
+      resetScriptAutoHide();
+    }
   };
 
   const prevScene = () => {
     if (activeSceneIndex > 0) {
-      setActiveSceneIndex((i) => i - 1);
+      const target = activeSceneIndex - 1;
+      setActiveSceneIndex(target);
       setActiveActionIndex(0);
+      setNavTarget({ scene: target, action: 0 });
       setShowScriptPanel(true);
       setShowScenesSidebar(false);
+      if (isMobile) {
+        resetScriptAutoHide();
+      }
     }
   };
 
   const nextScene = () => {
     if (data?.scenes && activeSceneIndex < data.scenes.length - 1) {
-      setActiveSceneIndex((i) => i + 1);
+      const target = activeSceneIndex + 1;
+      setActiveSceneIndex(target);
       setActiveActionIndex(0);
+      setNavTarget({ scene: target, action: 0 });
       setShowScriptPanel(true);
       setShowScenesSidebar(false);
+      if (isMobile) {
+        resetScriptAutoHide();
+      }
     }
   };
 
@@ -580,7 +921,9 @@ export function ClassroomPlayerPage() {
       dir="rtl"
     >
       {/* ── Main Workspace (Scene on Right, Mutually-Exclusive Sidebar on Left) ── */}
-      <div className="flex-1 w-full h-[calc(100vh-64px)] overflow-hidden relative flex">
+      <div className={`flex-1 w-full overflow-hidden relative flex ${
+        isMobileLandscape ? 'h-screen' : 'h-[calc(100vh-64px)]'
+      }`}>
         {/* Loading Overlay */}
         {loading && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-center p-6 bg-slate-950 z-40">
@@ -610,22 +953,26 @@ export function ClassroomPlayerPage() {
           </div>
         )}
 
-        {/* ── Active Scene Canvas (RIGHT in RTL) ── */}
-        <section className="flex-1 h-full min-w-0 bg-slate-950 relative overflow-hidden flex flex-col">
+        {/* ── Active Scene Canvas (RIGHT in RTL) - Tap to show/hide controls in landscape ── */}
+        <section
+          onClick={handleRenderTap}
+          className="flex-1 h-full min-w-0 bg-slate-950 relative overflow-hidden flex flex-col cursor-pointer select-none"
+        >
           {!loading && !error && data && (
             <div className="w-full h-full relative overflow-hidden bg-slate-950">
               <ClassroomErrorBoundary>
                 <ClassroomViewer
                   key={`${data.id || data.stage?.id || 'classroom'}-${voiceSource}`}
                   data={data}
-                  startScene={activeSceneIndex}
-                  startAction={activeActionIndex}
+                  startScene={navTarget.scene}
+                  startAction={navTarget.action}
                   mediaBaseUrl={mediaBaseUrl}
                   darkMode={true}
                   embed={true}
                   hidePlaybackBar={true}
                   autoPlay={isPlaying}
                   onProgress={handleProgress}
+                  onPlayStateChange={(p) => setIsPlaying(p)}
                   onComplete={() => {
                     setIsPlaying(false);
                   }}
@@ -637,7 +984,16 @@ export function ClassroomPlayerPage() {
 
         {/* ── Sidebar 1: Live Synchronized Script / Transcript Panel (LEFT in RTL) ── */}
         {showScriptPanel && (
-          <aside className="w-80 sm:w-96 lg:w-[420px] h-full bg-slate-900/95 border-r border-slate-800 flex flex-col shrink-0 shadow-2xl backdrop-blur-md transition-all duration-300 z-20 animate-in slide-in-from-right duration-200">
+          <aside
+            onTouchStart={resetScriptAutoHide}
+            onPointerDown={resetScriptAutoHide}
+            onScroll={resetScriptAutoHide}
+            className={`h-full bg-slate-900/95 border-r border-slate-800 flex flex-col shrink-0 shadow-2xl backdrop-blur-md transition-all duration-300 z-30 animate-in slide-in-from-right duration-200 ${
+              isMobile
+                ? 'fixed right-0 top-0 bottom-16 w-80 max-w-[85vw] border-l border-slate-800'
+                : 'relative w-80 sm:w-96 lg:w-[420px]'
+            }`}
+          >
             {/* Script Panel Topbar (with Voice Studio Button) */}
             <div className="p-3.5 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
               <div className="flex items-center gap-2">
@@ -651,15 +1007,17 @@ export function ClassroomPlayerPage() {
               </div>
 
               <div className="flex items-center gap-1.5">
-                {/* Voice Studio Button (Positioned on Script Topbar as requested) */}
-                <button
-                  onClick={() => setShowVoiceStudio(true)}
-                  className="px-2 py-1 rounded-lg bg-purple-950/80 hover:bg-purple-900 text-purple-300 text-[11px] font-black border border-purple-800/80 flex items-center gap-1 shadow-sm transition"
-                  title="استوديو تخصيص الأصوات ورفع صوت المعلم"
-                >
-                  <Sliders className="w-3 h-3 text-purple-400" />
-                  <span>استوديو الصوت</span>
-                </button>
+                {/* Voice Studio Button (Positioned on Script Topbar) - Hidden when no TTS */}
+                {hasTts && (
+                  <button
+                    onClick={() => setShowVoiceStudio(true)}
+                    className="px-2 py-1 rounded-lg bg-purple-950/80 hover:bg-purple-900 text-purple-300 text-[11px] font-black border border-purple-800/80 flex items-center gap-1 shadow-sm transition"
+                    title="استوديو تخصيص الأصوات ورفع صوت المعلم"
+                  >
+                    <Sliders className="w-3 h-3 text-purple-400" />
+                    <span>استوديو الصوت</span>
+                  </button>
+                )}
 
                 <button
                   onClick={copyFullScript}
@@ -735,6 +1093,7 @@ export function ClassroomPlayerPage() {
                       }}
                       onClick={() => {
                         setActiveActionIndex(act.originalIndex);
+                        setNavTarget({ scene: activeSceneIndex, action: act.originalIndex });
                         setIsPlaying(true);
                       }}
                       className={`p-3.5 rounded-2xl border cursor-pointer transition-all flex flex-col gap-2 ${
@@ -782,7 +1141,11 @@ export function ClassroomPlayerPage() {
 
         {/* ── Sidebar 2: Scenes List Drawer (Rendered only as sidebar, closes script when open) ── */}
         {showScenesSidebar && (
-          <aside className="w-80 sm:w-96 lg:w-[420px] h-full bg-slate-900/95 border-r border-slate-800 flex flex-col shrink-0 shadow-2xl backdrop-blur-md transition-all duration-300 z-20 animate-in slide-in-from-right duration-200">
+          <aside className={`h-full bg-slate-900/95 border-r border-slate-800 flex flex-col shrink-0 shadow-2xl backdrop-blur-md transition-all duration-300 z-30 animate-in slide-in-from-right duration-200 ${
+            isMobile
+              ? 'fixed right-0 top-0 bottom-16 w-80 max-w-[85vw] border-l border-slate-800'
+              : 'relative w-80 sm:w-96 lg:w-[420px]'
+          }`}>
             <div className="p-3.5 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
               <div className="flex items-center gap-2">
                 <ListOrdered className="w-4 h-4 text-cyan-400" />
@@ -852,7 +1215,19 @@ export function ClassroomPlayerPage() {
       </div>
 
       {/* ── Bottom Playback & Voice Controls Toolbar ── */}
-      <footer className="h-16 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 px-4 sm:px-6 flex items-center justify-between gap-3 z-30 shrink-0">
+      <footer
+        onPointerDown={resetLandscapeAutoHide}
+        onTouchStart={resetLandscapeAutoHide}
+        className={`backdrop-blur-md px-4 sm:px-6 flex items-center justify-between gap-3 z-30 transition-all duration-300 select-none ${
+          isMobileLandscape
+            ? `fixed bottom-0 inset-x-0 h-16 bg-gradient-to-t from-black/95 via-slate-950/90 to-transparent border-t-0 shadow-2xl ${
+                landscapeControlsVisible
+                  ? 'opacity-100 translate-y-0 pointer-events-auto'
+                  : 'opacity-0 translate-y-full pointer-events-none'
+              }`
+            : 'h-16 bg-slate-900/95 border-t border-slate-800 shrink-0 relative opacity-100 translate-y-0 pointer-events-auto'
+        }`}
+      >
         {/* Right Section: Scene Selector & Prev/Next (RTL Start) */}
         <div className="flex items-center gap-2">
           {/* Scenes Sidebar Toggle Button (Closes script when clicked) */}
@@ -914,8 +1289,8 @@ export function ClassroomPlayerPage() {
 
         {/* Left Section: Tools & Conditional Voice Switcher (RTL End) */}
         <div className="flex items-center gap-2">
-          {/* Conditional Voice Switcher: Render ONLY if multiple voices exist */}
-          {hasMultipleVoices && (
+          {/* Conditional Voice Switcher: Render ONLY if TTS is available AND multiple voices exist */}
+          {hasTts && hasMultipleVoices && (
             <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800">
               <button
                 onClick={() => switchVoiceSource('tts')}
@@ -957,22 +1332,6 @@ export function ClassroomPlayerPage() {
           >
             {showScriptPanel ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeftOpen className="w-4 h-4" />}
           </button>
-
-          {/* Upload ZIP */}
-          <label
-            className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition cursor-pointer"
-            title="رفع حزمة ZIP محلياً"
-          >
-            <Upload className="w-4 h-4" />
-            <input
-              type="file"
-              accept=".zip,.maic.zip"
-              className="hidden"
-              onChange={(e) => {
-                if (e.target.files?.[0]) handleZipFile(e.target.files[0]);
-              }}
-            />
-          </label>
 
           {/* Reload */}
           <button
@@ -1026,6 +1385,104 @@ export function ClassroomPlayerPage() {
                   <span>{voiceUploadSuccess}</span>
                 </div>
               )}
+
+              {/* Progress Alert for Large Model TTS */}
+              {isGeneratingTts && (
+                <div className="p-4 bg-purple-950/60 border border-purple-800/80 rounded-2xl flex items-center gap-3 text-xs text-purple-200 font-bold animate-pulse">
+                  <Loader2 className="w-5 h-5 text-purple-400 animate-spin shrink-0" />
+                  <div className="space-y-0.5">
+                    <div>{ttsProgressMsg}</div>
+                    <div className="text-[10px] text-purple-300/80 font-normal">
+                      يتم توليد الصوت بتنسيق خفيف وسريع التحميل (Lightweight MP3) وحفظه تلقائياً.
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Section 0: Large Model TTS Replacement (ElevenLabs / Gemini) */}
+              <div className="space-y-3 bg-gradient-to-b from-purple-950/40 to-slate-950/60 p-4 rounded-3xl border border-purple-800/50 shadow-inner">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-black text-purple-200 flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-purple-400" />
+                    <span>توليد واستبدال الأصوات بنموذج ضخم فائق الجودة (Lightweight Large Model TTS):</span>
+                  </label>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 font-mono">
+                    Fast 64kbps
+                  </span>
+                </div>
+
+                {/* Provider Selector Tabs */}
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTtsProvider('elevenlabs')}
+                    className={`p-2.5 rounded-2xl border text-xs font-bold flex items-center justify-center gap-2 transition ${
+                      ttsProvider === 'elevenlabs'
+                        ? 'bg-purple-600/30 border-purple-500 text-white shadow-md'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
+                    }`}
+                  >
+                    <Bot className="w-4 h-4 text-purple-400" />
+                    <span>ElevenLabs Multilingual v2</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTtsProvider('gemini')}
+                    className={`p-2.5 rounded-2xl border text-xs font-bold flex items-center justify-center gap-2 transition ${
+                      ttsProvider === 'gemini'
+                        ? 'bg-cyan-600/30 border-cyan-500 text-white shadow-md'
+                        : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
+                    }`}
+                  >
+                    <Zap className="w-4 h-4 text-cyan-400" />
+                    <span>Google Gemini / Neural TTS</span>
+                  </button>
+                </div>
+
+                {/* API Key Input */}
+                <div className="space-y-1.5 pt-1">
+                  <div className="flex justify-between text-[11px] font-bold text-slate-300">
+                    <span>
+                      {ttsProvider === 'elevenlabs' ? 'مفتاح ElevenLabs API Key:' : 'مفتاح Gemini / Google API Key:'}
+                    </span>
+                    <span className="text-[10px] text-slate-500">يُحفظ محلياً في المتصفح</span>
+                  </div>
+                  <input
+                    type="password"
+                    placeholder={ttsProvider === 'elevenlabs' ? 'sk_...' : 'AIzaSy...'}
+                    value={ttsProvider === 'elevenlabs' ? elevenLabsApiKey : geminiApiKey}
+                    onChange={(e) => {
+                      if (ttsProvider === 'elevenlabs') {
+                        setElevenLabsApiKey(e.target.value);
+                      } else {
+                        setGeminiApiKey(e.target.value);
+                      }
+                    }}
+                    className="w-full bg-slate-900/90 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 font-mono focus:border-purple-500 outline-none"
+                  />
+                </div>
+
+                {/* Batch Generation Button */}
+                <button
+                  type="button"
+                  onClick={handleGenerateLargeModelTts}
+                  disabled={isGeneratingTts}
+                  className="w-full mt-2 py-2.5 px-4 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-black rounded-xl shadow-lg shadow-purple-600/20 transition flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {isGeneratingTts ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>{ttsProgressMsg || 'جاري التوليد...'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4 text-amber-300" />
+                      <span>توليد كافة الحوارات واستبدال الصوت بتنسيق خفيف</span>
+                    </>
+                  )}
+                </button>
+              </div>
 
               {/* Section 1: Choose Voice Preset */}
               <div className="space-y-3">
@@ -1104,11 +1561,11 @@ export function ClassroomPlayerPage() {
                 </div>
               </div>
 
-              {/* Section 3: Upload Custom Audio for Specific Dialogue */}
+              {/* Section 3: Custom Audio for Specific Dialogue */}
               <div className="space-y-3">
                 <label className="text-xs font-black text-slate-200 flex items-center gap-2">
-                  <Upload className="w-4 h-4 text-emerald-400" />
-                  <span>3. استبدال ورفع مقطع صوتي مخصص (Per-Scene Upload):</span>
+                  <Mic className="w-4 h-4 text-emerald-400" />
+                  <span>3. استبدال صوت المشهد بحوار مخصص (Per-Scene Voice):</span>
                 </label>
 
                 <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-2xl space-y-3">
@@ -1145,9 +1602,9 @@ export function ClassroomPlayerPage() {
                   </div>
 
                   <label className="border-2 border-dashed border-slate-700 hover:border-purple-500 rounded-2xl p-5 flex flex-col items-center justify-center gap-2 cursor-pointer transition bg-slate-900/40">
-                    <Upload className="w-6 h-6 text-purple-400" />
+                    <Mic className="w-6 h-6 text-purple-400" />
                     <span className="text-xs font-bold text-slate-200">
-                      {isUploadingVoice ? 'جاري رفع ومعالجة الصوت عبر الـ Worker...' : 'انقر لرفع ملف صوتي (.mp3 أو .wav)'}
+                      {isUploadingVoice ? 'جاري معالجة الصوت وحفظه عبر الـ Worker...' : 'انقر لاختيار ملف صوتي (.mp3 أو .wav)'}
                     </span>
                     <span className="text-[10px] text-slate-500">يتم حفظ الملف وربطه فورياً بهذا المشهد عبر Worker POST API</span>
                     <input

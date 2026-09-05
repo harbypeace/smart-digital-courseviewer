@@ -210,3 +210,23 @@ This endpoint serves the HTML viewer for the printed textbook pages. It dynamica
 # Get the printed pages HTML for Adab Grade 10, Pages 11-15:
 curl "https://courseviewer.lms-yemen.com/printed-pages?subject=adb10p1&unit=u1&lesson=l1&start=11&end=15"
 ```
+
+---
+
+## 6. Classroom Iframe Player
+**Endpoint:** /classroom  
+**Methods:** GET
+
+This endpoint serves the standalone Cloudflare Pages interactive player for a classroom session. It natively integrates with the /api/classroom-data resolver without requiring a separate json parameter.
+
+### Request Parameters (Query String)
+*   \subject\ (e.g., \io10p1\)
+*   \unit\ (e.g., \u1\)
+*   \lesson\ (e.g., \l3\)
+*   \id\ (e.g., \dtpxiWvtSV\)
+
+### Example \GET\ Request
+\\\ash
+curl "https://courseviewer.lms-yemen.com/classroom?subject=bio10p1&unit=u1&lesson=l3&id=dtpxiWvtSV"
+\\\
+

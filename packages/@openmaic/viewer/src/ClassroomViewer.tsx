@@ -15,10 +15,45 @@ function speechDuration(text: string) {
   return Math.max(2000, (text.length / charsPerSecond) * 1000);
 }
 
+function normalizeViewerData(
+  d: ClassroomData,
+  mediaUrls?: Map<string, string>,
+  effectiveMediaBase?: string
+): ClassroomData {
+  if (!d || !Array.isArray(d.scenes)) return d;
+  d.scenes.forEach(s => {
+    if (s.type === 'slide' && (s.content as any)?.canvas?.elements) {
+      (s.content as any).canvas.elements.forEach((el: any) => {
+        if ((el.type === 'image' || el.type === 'video') && el.src) {
+          const cleanPath = String(el.src).replace(/^\//, '');
+          const filename = cleanPath.split('/').pop()?.split('?')[0] || '';
+          if (mediaUrls?.has(cleanPath)) el.src = mediaUrls.get(cleanPath);
+          else if (mediaUrls?.has(filename)) el.src = mediaUrls.get(filename);
+          else if (effectiveMediaBase && !/^(http|data:|blob:|\/)/i.test(el.src))
+            el.src = `${effectiveMediaBase.replace(/\/$/, '')}/${cleanPath}`;
+        }
+      });
+    }
+    s.actions?.forEach((a: any) => {
+      // Import only images and video (visualUrl), not audio for now
+      if (a.visualUrl) {
+        const cleanPath = String(a.visualUrl).replace(/^\//, '');
+        const filename = cleanPath.split('/').pop()?.split('?')[0] || '';
+        if (mediaUrls?.has(cleanPath)) a.visualUrl = mediaUrls.get(cleanPath);
+        else if (mediaUrls?.has(filename)) a.visualUrl = mediaUrls.get(filename);
+        else if (effectiveMediaBase && !/^(http|https|blob:|data:|\/)/i.test(a.visualUrl))
+          a.visualUrl = `${effectiveMediaBase.replace(/\/$/, '')}/${cleanPath}`;
+      }
+    });
+  });
+  return d;
+}
+
 export function ClassroomViewer({
   data: inputData, zipUrl, zipBlob, classroomUrl, mediaBaseUrl,
   dialog = false, onClose, darkMode = false, startScene = 0, startAction = 0, className,
-  onProgress, onComplete, embed = false, hidePlaybackBar = false, autoPlay = true
+  onProgress, onComplete, embed = false, hidePlaybackBar = false, autoPlay = true,
+  onPlayStateChange
 }: ClassroomViewerProps) {
   const [data, setData] = useState<ClassroomData | null>(inputData ?? null);
   const [loading, setLoading] = useState(false);
@@ -27,7 +62,7 @@ export function ClassroomViewer({
 
   const effectiveMediaBase = mediaBaseUrl ?? (classroomUrl ? `${classroomUrl.replace(/\/$/, '')}/` : undefined);
 
-  // ── Data loading (preserved exactly) ──
+  // ── Data loading ──
   // classroomUrl fetch
   useEffect(() => {
     if (inputData || zipUrl || zipBlob) return;
@@ -35,14 +70,22 @@ export function ClassroomViewer({
     setLoading(true);
     fetch(`${classroomUrl.replace(/\/$/, '')}/classroom.json`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then(d => setData(d as ClassroomData))
+      .then(d => {
+        const normalized = normalizeViewerData(d as ClassroomData, undefined, effectiveMediaBase);
+        setData(normalized);
+      })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false));
-  }, [classroomUrl, inputData, zipUrl, zipBlob]);
+  }, [classroomUrl, inputData, zipUrl, zipBlob, effectiveMediaBase]);
 
-  // ZIP fetch
+  // ZIP or inputData fetch
   useEffect(() => {
-    if (inputData) { setData(inputData); return; }
+    if (inputData) {
+      const cloned = JSON.parse(JSON.stringify(inputData)) as ClassroomData;
+      normalizeViewerData(cloned, undefined, effectiveMediaBase);
+      setData(cloned);
+      return;
+    }
     if (!zipUrl && !zipBlob) return;
     setLoading(true);
     const src = zipBlob ? zipBlob : fetch(zipUrl!).then(r => r.blob());
@@ -52,56 +95,14 @@ export function ClassroomViewer({
       const jf = zip.file(/(classroom|manifest)\.json$/i)[0];
       if (!jf) throw new Error('No classroom.json or manifest.json in ZIP');
       const d = JSON.parse(await jf.async('string')) as ClassroomData;
-      // Extract media as blob URLs
+      // Extract only image and video media (not audio)
       const mediaUrls = new Map<string, string>();
-      const mediaFiles = zip.file(/\.(png|jpg|jpeg|gif|webp|svg|mp3|wav|ogg|mp4|webm)$/i);
+      const mediaFiles = zip.file(/\.(png|jpg|jpeg|gif|webp|svg|mp4|webm)$/i);
       for (const file of mediaFiles) {
         const blob = await file.async('blob');
         mediaUrls.set(file.name.split('/').pop()!, URL.createObjectURL(blob));
       }
-
-      d.scenes?.forEach(s => {
-        if (s.type === 'slide' && (s.content as any)?.canvas?.elements) {
-          (s.content as any).canvas.elements.forEach((el: any) => {
-            if (el.type === 'image' && el.src) {
-              const cleanPath = el.src.replace(/^\//, '');
-              const filename = cleanPath.split('/').pop()!;
-              if (mediaUrls.has(cleanPath)) el.src = mediaUrls.get(cleanPath);
-              else if (mediaUrls.has(filename)) el.src = mediaUrls.get(filename);
-              else if (effectiveMediaBase && !/^(http|data:|blob:)/.test(el.src))
-                el.src = `${effectiveMediaBase.replace(/\/$/, '')}/${cleanPath}`;
-            }
-            if (el.type === 'video' && el.src) {
-              const cleanPath = el.src.replace(/^\//, '');
-              const filename = cleanPath.split('/').pop()!;
-              if (mediaUrls.has(cleanPath)) el.src = mediaUrls.get(cleanPath);
-              else if (mediaUrls.has(filename)) el.src = mediaUrls.get(filename);
-              else if (effectiveMediaBase && !el.src.startsWith('http'))
-                el.src = `${effectiveMediaBase.replace(/\/$/, '')}/${cleanPath}`;
-            }
-          });
-        }
-        s.actions?.forEach((a: any) => {
-          if (a.type === 'speech' || a.type === 'speak') {
-            if (a.audioUrl) {
-              const cleanPath = a.audioUrl.replace(/^\//, '');
-              const filename = cleanPath.split('/').pop()!;
-              if (mediaUrls.has(cleanPath)) a.audioUrl = mediaUrls.get(cleanPath);
-              else if (mediaUrls.has(filename)) a.audioUrl = mediaUrls.get(filename);
-              else if (effectiveMediaBase && !/^(http|https|blob:|data:|\/)/i.test(a.audioUrl))
-                a.audioUrl = `${effectiveMediaBase.replace(/\/$/, '')}/${cleanPath}`;
-            }
-            if (a.visualUrl) {
-              const cleanPath = a.visualUrl.replace(/^\//, '');
-              const filename = cleanPath.split('/').pop()!;
-              if (mediaUrls.has(cleanPath)) a.visualUrl = mediaUrls.get(cleanPath);
-              else if (mediaUrls.has(filename)) a.visualUrl = mediaUrls.get(filename);
-              else if (effectiveMediaBase && !/^(http|https|blob:|data:|\/)/i.test(a.visualUrl))
-                a.visualUrl = `${effectiveMediaBase.replace(/\/$/, '')}/${cleanPath}`;
-            }
-          }
-        });
-      });
+      normalizeViewerData(d, mediaUrls, effectiveMediaBase);
       setData(d);
     }).catch(err => setError(err.message)).finally(() => setLoading(false));
   }, [inputData, zipUrl, zipBlob, effectiveMediaBase]);
@@ -117,46 +118,36 @@ export function ClassroomViewer({
   const [effects, setEffects] = useState<{ spotlight?: string; laser?: string }>({});
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioCache = useRef<Map<string, HTMLAudioElement>>(new Map());
   const playingRef = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [playTrigger, setPlayTrigger] = useState(0);
 
-  // Track startScene changes with ref to avoid loop with onProgress
-  const prevStartSceneRef = useRef(startScene);
-  const prevStartActionRef = useRef(startAction);
-
-  useEffect(() => {
-    if (data) {
-      if (prevStartSceneRef.current !== startScene || prevStartActionRef.current !== startAction) {
-        prevStartSceneRef.current = startScene;
-        prevStartActionRef.current = startAction;
-        setSceneIdx(Math.min(startScene, data.scenes.length - 1));
-        setActionIdx(startAction);
-      }
-    }
-  }, [data, startScene, startAction]);
-
-  useEffect(() => {
-    if (data && autoPlay) {
-      setPlaying(true);
-    }
-  }, [data, autoPlay]);
-
+  // ── Navigation & Progress Echo Prevention ──
+  // Track last reported progress position so we can distinguish internal playback ticks
+  // from external user navigation (e.g. clicking sidebar or script panel).
+  const currentPosRef = useRef({ scene: startScene, action: startAction });
   const onProgressRef = useRef(onProgress);
   onProgressRef.current = onProgress;
 
-  useEffect(() => {
-    if (data && onProgressRef.current) {
-      onProgressRef.current(sceneIdx, actionIdx);
+  const reportProgress = useCallback((sIdx: number, aIdx: number) => {
+    currentPosRef.current = { scene: sIdx, action: aIdx };
+    if (onProgressRef.current) {
+      onProgressRef.current(sIdx, aIdx);
     }
-  }, [sceneIdx, actionIdx, data]);
-
-  const rtl = isRtl(data?.stage?.languageDirective);
-  const scene = data?.scenes[sceneIdx];
-  const actions = (scene?.actions ?? []) as Action[];
+  }, []);
 
   const clearTimers = () => {
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+    if (audioRef.current) {
+      try {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+        audioRef.current.onended = null;
+        audioRef.current.onerror = null;
+      } catch (_e) {}
+      audioRef.current = null;
+    }
     if (typeof window !== 'undefined' && window.speechSynthesis) {
       window.speechSynthesis.cancel();
     }
@@ -170,7 +161,64 @@ export function ClassroomViewer({
     setEffects({});
   }, []);
 
-  // ── Execute single action (preserved exactly) ──
+  // Respond ONLY to external navigation changes
+  const prevNavRef = useRef({ scene: startScene, action: startAction });
+
+  useEffect(() => {
+    if (!data) return;
+    if (startScene === prevNavRef.current.scene && startAction === prevNavRef.current.action) {
+      return;
+    }
+    prevNavRef.current = { scene: startScene, action: startAction };
+    stopAll();
+    setSceneIdx(Math.min(startScene, (data.scenes?.length ?? 1) - 1));
+    setActionIdx(startAction);
+    setPlayTrigger(t => t + 1);
+  }, [data, startScene, startAction, stopAll]);
+
+  const onPlayStateChangeRef = useRef(onPlayStateChange);
+  onPlayStateChangeRef.current = onPlayStateChange;
+
+  useEffect(() => {
+    onPlayStateChangeRef.current?.(playing);
+  }, [playing]);
+
+  useEffect(() => {
+    if (!data) return;
+    if (autoPlay) {
+      setPlaying(true);
+    } else {
+      stopAll();
+    }
+  }, [data, autoPlay, stopAll]);
+
+  const rtl = isRtl(data?.stage?.languageDirective);
+  const scene = data?.scenes[sceneIdx];
+  const actions = (scene?.actions ?? []) as Action[];
+
+  // Preload all audio files in the current scene to eliminate streaming latency & desync
+  useEffect(() => {
+    if (!actions || actions.length === 0) return;
+    actions.forEach((act) => {
+      if (act.type === 'speech') {
+        const sa = act as SpeechAction;
+        if (sa.audioUrl) {
+          const src = sa.audioUrl && !/^(http|https|data:|blob:|\/)/i.test(sa.audioUrl)
+            ? (effectiveMediaBase ? `${effectiveMediaBase.replace(/\/$/, '')}/${sa.audioUrl.replace(/^\//, '')}` : sa.audioUrl)
+            : sa.audioUrl;
+          if (src && !audioCache.current.has(src)) {
+            try {
+              const a = new Audio(src);
+              a.preload = 'auto';
+              audioCache.current.set(src, a);
+            } catch (_e) {}
+          }
+        }
+      }
+    });
+  }, [actions, effectiveMediaBase]);
+
+  // ── Execute single action with strict audio synchronization ──
   const runAction = useCallback((action: Action, done: () => void) => {
     switch (action.type) {
       case 'speech': {
@@ -180,33 +228,73 @@ export function ClassroomViewer({
         const audioSrc = sa.audioUrl && !/^(http|https|data:|blob:|\/)/i.test(sa.audioUrl)
           ? (effectiveMediaBase ? `${effectiveMediaBase.replace(/\/$/, '')}/${sa.audioUrl.replace(/^\//, '')}` : sa.audioUrl)
           : sa.audioUrl;
+
+        // Stop any previous audio / speech immediately to avoid overlapping voices
+        clearTimers();
+
+        let handled = false;
+        const finishAction = () => {
+          if (handled) return;
+          handled = true;
+          setSpeechText(null);
+          done();
+        };
+
+        let ttsActive = false;
         const fallbackTTS = () => {
+          if (handled || ttsActive) return;
+          ttsActive = true;
           if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
             const utterance = new SpeechSynthesisUtterance(sa.text);
             const isArabic = /[\u0600-\u06FF]/.test(sa.text);
             utterance.lang = isArabic ? 'ar-SA' : 'en-US';
-            utterance.onend = () => { setSpeechText(null); done(); };
-            utterance.onerror = () => {
-              timerRef.current = setTimeout(() => { setSpeechText(null); done(); }, ms);
+            utterance.rate = 1.0;
+            utterance.onend = finishAction;
+            utterance.onerror = (e: any) => {
+              if (e?.error === 'not-allowed') {
+                console.warn('SpeechSynthesis blocked by autoplay policy. Pausing for user interaction.');
+                stopAll();
+                return;
+              }
+              console.warn('SpeechSynthesis error, fallback timer:', e);
+              timerRef.current = setTimeout(finishAction, Math.min(ms, 4000));
             };
-            window.speechSynthesis.speak(utterance);
+            try {
+              window.speechSynthesis.speak(utterance);
+            } catch (_err) {
+              timerRef.current = setTimeout(finishAction, ms);
+            }
           } else {
-            timerRef.current = setTimeout(() => { setSpeechText(null); done(); }, ms);
+            timerRef.current = setTimeout(finishAction, ms);
           }
         };
 
         if (audioSrc) {
-          const a = new Audio(audioSrc);
+          let a = audioCache.current.get(audioSrc);
+          if (!a) {
+            a = new Audio(audioSrc);
+            audioCache.current.set(audioSrc, a);
+          }
+          a.currentTime = 0;
           audioRef.current = a;
-          a.onended = () => { setSpeechText(null); done(); };
+          a.onended = finishAction;
           a.onerror = (e) => {
             console.warn('Audio play error, falling back to TTS for:', audioSrc, e);
             fallbackTTS();
           };
-          a.play().catch((err) => {
-            console.warn('Audio play failed, falling back to TTS for:', audioSrc, err);
-            fallbackTTS();
-          });
+          const playPromise = a.play();
+          if (playPromise !== undefined) {
+            playPromise.catch((err) => {
+              if (err.name === 'AbortError') return; // User skipped / paused
+              if (err.name === 'NotAllowedError') {
+                console.warn('Autoplay blocked by browser policy. Pausing and showing play prompt for user gesture.');
+                stopAll();
+                return;
+              }
+              console.warn('Audio play failed, falling back to TTS for:', audioSrc, err);
+              fallbackTTS();
+            });
+          }
         } else {
           fallbackTTS();
         }
@@ -251,9 +339,10 @@ export function ClassroomViewer({
       const acts = actionsRef.current;
       if (idx >= acts.length) { 
         if (sceneIdx < (data?.scenes.length ?? 1) - 1) {
-          setSceneIdx(s => s + 1);
+          const nextScene = sceneIdx + 1;
+          reportProgress(nextScene, 0);
           setActionIdx(0);
-          if (onProgress) onProgress(sceneIdx + 1, 0);
+          setSceneIdx(nextScene);
         } else {
           setPlaying(false); 
           playingRef.current = false; 
@@ -262,9 +351,7 @@ export function ClassroomViewer({
         return; 
       }
       setActionIdx(idx);
-      if (onProgress) {
-        onProgress(sceneIdx, idx);
-      }
+      reportProgress(sceneIdx, idx);
       runAction(acts[idx], () => {
         if (stopped || !playingRef.current) return;
         idx++;
@@ -276,15 +363,30 @@ export function ClassroomViewer({
 
     return () => { stopped = true; clearTimers(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playing, scene?.id, sceneIdx]);
+  }, [playing, scene?.id, sceneIdx, playTrigger]);
 
-  useEffect(() => { setActionIdx(0); }, [sceneIdx]);
-
-  const play = () => { setActionIdx(0); setPlaying(true); };
+  const play = () => { setPlaying(true); };
   const pause = () => { stopAll(); };
-  const prev = () => { stopAll(); setActionIdx(0); setSceneIdx(i => Math.max(0, i - 1)); };
-  const next = () => { stopAll(); setActionIdx(0); setSceneIdx(i => Math.min((data?.scenes.length ?? 1) - 1, i + 1)); };
-  const goTo = (i: number) => { stopAll(); setActionIdx(0); setSceneIdx(i); };
+  const prev = () => { 
+    stopAll(); 
+    const targetScene = Math.max(0, sceneIdx - 1);
+    reportProgress(targetScene, 0);
+    setActionIdx(0); 
+    setSceneIdx(targetScene); 
+  };
+  const next = () => { 
+    stopAll(); 
+    const targetScene = Math.min((data?.scenes.length ?? 1) - 1, sceneIdx + 1);
+    reportProgress(targetScene, 0);
+    setActionIdx(0); 
+    setSceneIdx(targetScene); 
+  };
+  const goTo = (i: number) => { 
+    stopAll(); 
+    reportProgress(i, 0);
+    setActionIdx(0); 
+    setSceneIdx(i); 
+  };
 
   // ── Keyboard shortcuts ──
   useEffect(() => {

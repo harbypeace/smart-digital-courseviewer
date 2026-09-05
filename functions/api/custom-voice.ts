@@ -182,7 +182,129 @@ export const onRequest: PagesFunction<Env> = async (context) => {
         );
       }
 
-      // ── Action 3: Synthesize Speech Preview ──
+      // ── Action 3: Synthesize High-Quality Speech via ElevenLabs / Gemini (Lightweight Format) ──
+      if (action === 'generate_tts') {
+        const {
+          provider = 'elevenlabs',
+          apiKey,
+          voiceId,
+          model,
+          replaceOriginalTts = true,
+        } = body;
+
+        if (!text) {
+          throw new Error('Text is required for TTS synthesis');
+        }
+
+        let binaryData: Uint8Array | null = null;
+
+        // 1. ElevenLabs Multilingual v2 with lightweight fast-loading MP3 format (mp3_44100_64)
+        if (provider === 'elevenlabs') {
+          const elevenKey = apiKey || (env as any).ELEVENLABS_API_KEY;
+          if (!elevenKey) {
+            throw new Error('مفتاح ElevenLabs API مطلوب لإتمام التوليد');
+          }
+
+          const selectedVoice = voiceId || '21m00Tcm4TlvDq8ikWAM';
+          const elevenUrl = `https://api.elevenlabs.io/v1/text-to-speech/${selectedVoice}?output_format=mp3_44100_64`;
+
+          const elevenRes = await fetch(elevenUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'xi-api-key': elevenKey,
+            },
+            body: JSON.stringify({
+              text,
+              model_id: model || 'eleven_multilingual_v2',
+              voice_settings: {
+                stability: 0.5,
+                similarity_boost: 0.75,
+              },
+            }),
+          });
+
+          if (!elevenRes.ok) {
+            const errText = await elevenRes.text();
+            throw new Error(`ElevenLabs API error (${elevenRes.status}): ${errText}`);
+          }
+
+          const audioBuf = await elevenRes.arrayBuffer();
+          binaryData = new Uint8Array(audioBuf);
+        }
+
+        // 2. Google Gemini / Neural2 TTS with lightweight 24kHz MP3 format
+        if (provider === 'gemini' || provider === 'google') {
+          const geminiKey = apiKey || (env as any).GEMINI_API_KEY || (env as any).GOOGLE_TTS_API_KEY;
+          if (!geminiKey) {
+            throw new Error('مفتاح Gemini / Google API مطلوب لإتمام التوليد');
+          }
+
+          const gUrl = `https://texttospeech.googleapis.com/v1/text:synthesize?key=${geminiKey}`;
+          const gRes = await fetch(gUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              input: { text },
+              voice: {
+                languageCode: 'ar-XA',
+                name: voiceId || 'ar-XA-Journey-F',
+              },
+              audioConfig: {
+                audioEncoding: 'MP3',
+                speakingRate: speed || 1.0,
+                pitch: 0.0,
+                sampleRateHertz: 24000,
+              },
+            }),
+          });
+
+          if (!gRes.ok) {
+            const errText = await gRes.text();
+            throw new Error(`Gemini/Google TTS error (${gRes.status}): ${errText}`);
+          }
+
+          const gJson: any = await gRes.json();
+          if (!gJson.audioContent) {
+            throw new Error('لم يتم استلام محتوى صوتي من Google/Gemini TTS');
+          }
+          binaryData = Uint8Array.from(atob(gJson.audioContent), (c) => c.charCodeAt(0));
+        }
+
+        if (!binaryData) {
+          throw new Error(`المزود غير مدعوم: ${provider}`);
+        }
+
+        const targetKey = replaceOriginalTts
+          ? `classrooms/${subject}/${u}/${l}/${classroomId}/tts/scene_${padScene}_speech_${padSpeech}.mp3`
+          : customAudioKey;
+
+        // Save to R2
+        if (env.COURSES) {
+          try {
+            await env.COURSES.put(targetKey, binaryData, {
+              httpMetadata: { contentType: 'audio/mpeg' },
+            });
+          } catch (_e) {}
+        }
+
+        const audioUrl = `/api/courses/${targetKey}?t=${Date.now()}`;
+        return new Response(
+          JSON.stringify({
+            status: 'ok',
+            message: 'تم توليد الصوت بنجاح بصيغة خفيفة وسريعة التحميل (Lightweight Fast MP3)',
+            audioUrl,
+            provider,
+            sizeBytes: binaryData.byteLength,
+            sceneIndex,
+            speechIndex,
+            key: targetKey,
+          }),
+          { status: 200, headers: corsHeaders }
+        );
+      }
+
+      // ── Action 4: Synthesize Speech Preview ──
       if (action === 'preview_speech') {
         return new Response(
           JSON.stringify({

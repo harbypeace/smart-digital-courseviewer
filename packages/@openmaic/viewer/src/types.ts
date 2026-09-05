@@ -49,4 +49,6 @@ export interface ClassroomViewerProps {
   hidePlaybackBar?: boolean;
   /** Auto start playback of classroom scenes and actions when loaded */
   autoPlay?: boolean;
+  /** Callback triggered when playback state changes (playing / paused) */
+  onPlayStateChange?: (playing: boolean) => void;
 }

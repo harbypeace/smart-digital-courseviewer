@@ -7,6 +7,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      '@openmaic/viewer': path.resolve(__dirname, './packages/@openmaic/viewer/src'),
       'react': path.resolve(__dirname, './node_modules/react'),
       'react-dom': path.resolve(__dirname, './node_modules/react-dom'),
       'react/jsx-runtime': path.resolve(__dirname, './node_modules/react/jsx-runtime'),
@@ -19,6 +20,16 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8788',
+        changeOrigin: true,
+      },
+      '/pages': {
+        target: 'http://localhost:8788',
+        changeOrigin: true,
+      },
+    },
   },
   build: {
     outDir: 'dist',

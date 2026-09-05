@@ -249,7 +249,8 @@ export async function loadUniversalFromZip(
 
   const zip = await JSZip.loadAsync(zipBlob);
   const mediaUrls = new Map<string, string>();
-  const mediaRegex = /\.(png|jpg|jpeg|gif|webp|svg|mp3|wav|ogg|mp4|webm)$/i;
+  // Only import images and video (not audio)
+  const mediaRegex = /\.(png|jpg|jpeg|gif|webp|svg|mp4|webm)$/i;
   const mediaFiles = zip.file(mediaRegex);
   for (const file of mediaFiles) {
     const blob = await file.async('blob');
