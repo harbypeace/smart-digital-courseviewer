@@ -347,7 +347,16 @@ const server = http.createServer(async (req, res) => {
       const s3Headers = {};
       if (req.headers.range) s3Headers['Range'] = req.headers.range;
 
-      const s3Res = await S3_COURSES_CLIENT.fetch(s3Url, { method: req.method, headers: s3Headers });
+      const s3Controller = new AbortController();
+      const s3Timeout = setTimeout(() => s3Controller.abort(), 2000);
+      let s3Res;
+      try {
+        s3Res = await S3_COURSES_CLIENT.fetch(s3Url, { method: req.method, headers: s3Headers, signal: s3Controller.signal });
+      } catch (_err) {
+        s3Res = { ok: false, status: 404 };
+      } finally {
+        clearTimeout(s3Timeout);
+      }
       if (s3Res.ok || s3Res.status === 206) {
         const buf = Buffer.from(await s3Res.arrayBuffer());
         const headers = {

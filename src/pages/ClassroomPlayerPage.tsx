@@ -464,31 +464,38 @@ export function ClassroomPlayerPage() {
     ) => {
       setRawData(raw);
 
-      const allSpeeches = (raw.scenes || []).flatMap((s: any) =>
-        (s.actions || []).filter((a: any) => a.type === 'speech' || a.type === 'speak' || a.text || a.speech)
-      );
+      // Render immediately with original audio without waiting for slow network probes
+      const initialVoice = 'original';
+      setHasTts(false);
+      setVoiceSource(initialVoice);
 
-      let ttsExists = false;
-      if (allSpeeches.length > 0) {
-        const testTtsUrl = `/api/courses/classrooms/${sub}/${u}/${l}/${cId}/tts/scene_00_speech_00.mp3`;
-        try {
-          const probe = await fetch(testTtsUrl, { method: 'HEAD' });
-          ttsExists = probe.ok;
-        } catch (_e) {
-          ttsExists = false;
-        }
-      }
-
-      setHasTts(ttsExists);
-      const chosenVoice = ttsExists ? 'tts' : 'original';
-      setVoiceSource(chosenVoice);
-
-      const withVoice = applyVoiceSource(raw, chosenVoice, sub, u, l, cId, zUrl, customAudioMap);
+      const withVoice = applyVoiceSource(raw, initialVoice, sub, u, l, cId, zUrl, customAudioMap);
       setData(withVoice);
       setActiveSceneIndex(0);
       setActiveActionIndex(0);
       setNavTarget({ scene: 0, action: 0 });
       setLoading(false);
+
+      // Non-blocking background probe for optional pre-generated TTS
+      const allSpeeches = (raw.scenes || []).flatMap((s: any) =>
+        (s.actions || []).filter((a: any) => a.type === 'speech' || a.type === 'speak' || a.text || a.speech)
+      );
+
+      if (allSpeeches.length > 0) {
+        const testTtsUrl = `/api/courses/classrooms/${sub}/${u}/${l}/${cId}/tts/scene_00_speech_00.mp3`;
+        const ctrl = new AbortController();
+        const tId = setTimeout(() => ctrl.abort(), 1000);
+        fetch(testTtsUrl, { method: 'HEAD', signal: ctrl.signal })
+          .then((probe) => {
+            clearTimeout(tId);
+            if (probe.ok) {
+              setHasTts(true);
+              setVoiceSource('tts');
+              setData(applyVoiceSource(raw, 'tts', sub, u, l, cId, zUrl, customAudioMap));
+            }
+          })
+          .catch(() => {});
+      }
     };
 
     try {

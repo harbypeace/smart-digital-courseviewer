@@ -52,6 +52,8 @@ export function SceneRenderer({ scene, effects, whiteboardOpen, whiteboardElemen
       style={{
         width: '100%',
         height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
         animation: 'cv-fadeIn 0.25s ease-out',
       }}
     >

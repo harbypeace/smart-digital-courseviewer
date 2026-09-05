@@ -509,8 +509,8 @@ export function ClassroomViewer({
             title={data.stage?.name}
           />
         )}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, position: 'relative' }}>
-          <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, position: 'relative', height: '100%' }}>
+          <div style={{ flex: 1, width: '100%', height: '100%', display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
             {scene && (
               <SceneRenderer
                 scene={scene}
