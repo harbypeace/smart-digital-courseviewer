@@ -1,10 +1,20 @@
-const BASE = 'http://127.0.0.1:8788';
+import { createJwt } from './src/lib/jwt-auth.js';
+
+const BASE = process.env.BASE || 'http://127.0.0.1:8788';
+const TEST_TOKEN = process.env.TEST_TOKEN || (process.env.TEST_SECRET
+  ? await createJwt({ sub: 'pages-smoke-test', role: 'teacher' }, process.env.TEST_SECRET, 3600)
+  : '');
 
 async function fetchUrl(path, options = {}) {
   const url = `${BASE}${path}`;
+  const headers = new Headers(options.headers);
+  if (TEST_TOKEN && (path.startsWith('/api/classroom-data') || path.startsWith('/api/courses/') || path.startsWith('/api/classroom-zip/') || path.startsWith('/custom-voice') || path.startsWith('/classroom') || path.startsWith('/html'))) {
+    headers.set('Authorization', `Bearer ${TEST_TOKEN}`);
+  }
+
   const t0 = performance.now();
   try {
-    const res = await fetch(url, options);
+    const res = await fetch(url, { ...options, headers });
     const duration = Math.round(performance.now() - t0);
     const contentType = res.headers.get('content-type') || '';
     let bodySnippet = '';

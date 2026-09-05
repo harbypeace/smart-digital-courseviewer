@@ -13,6 +13,7 @@ interface Env {
 }
 
 const PUBLIC_R2_COURSES = 'https://pub-a7d6ac39d1654484ad48d9a264e93d51.r2.dev';
+const PUBLIC_OPENMAIC_MEDIA = 'https://open.maic.chat/api/classroom-media';
 
 function getMimeType(pathname: string): string {
   const p = pathname.toLowerCase();
@@ -86,6 +87,44 @@ function isEnabled(value?: string): boolean {
   return value === '1' || value?.toLowerCase() === 'true' || value?.toLowerCase() === 'yes';
 }
 
+async function fetchLegacyPublicAudio(cleanKey: string, request: Request): Promise<Response | null> {
+  const match = cleanKey.match(/^classrooms\/([^/]+)\/(u\d+)\/(l\d+)\/([^/]+)\/tts\/scene_(\d+)_speech_(\d+)\.mp3$/i);
+  if (!match) return null;
+
+  const [, subject, unit, lesson, classroomId, sceneIndexText, speechIndexText] = match;
+  try {
+    const manifestUrl = `${PUBLIC_R2_COURSES}/classrooms/${subject}/${unit}/${lesson}/${classroomId}/classdata.json`;
+    const manifestResponse = await fetch(manifestUrl);
+    if (!manifestResponse.ok) return null;
+    const manifest = await manifestResponse.json() as any;
+    const sceneIndex = Number(sceneIndexText);
+    const speechIndex = Number(speechIndexText);
+    const actions = Array.isArray(manifest?.scenes?.[sceneIndex]?.actions)
+      ? manifest.scenes[sceneIndex].actions.filter((action: any) => action?.type === 'speech' || action?.type === 'speak' || action?.audio || action?.audioUrl)
+      : [];
+    const action = actions[speechIndex];
+    const audioId = action?.audioId || String(action?.audioUrl || '').match(/\/audio\/([^/?#]+)\.mp3/i)?.[1];
+    if (!audioId) return null;
+
+    const audioUrl = `${PUBLIC_OPENMAIC_MEDIA}/${encodeURIComponent(classroomId)}/audio/${encodeURIComponent(audioId)}.mp3`;
+    const headers = new Headers();
+    const range = request.headers.get('Range');
+    if (range) headers.set('Range', range);
+    const audioResponse = await fetch(audioUrl, { method: request.method, headers });
+    if (!audioResponse.ok && audioResponse.status !== 206) return null;
+    const responseHeaders = new Headers(audioResponse.headers);
+    responseHeaders.set('Content-Type', 'audio/mpeg');
+    responseHeaders.set('Cache-Control', 'private, max-age=3600');
+    responseHeaders.set('Accept-Ranges', 'bytes');
+    return new Response(request.method === 'HEAD' ? null : audioResponse.body, {
+      status: audioResponse.status,
+      headers: responseHeaders,
+    });
+  } catch (_error) {
+    return null;
+  }
+}
+
 export const onRequest: PagesFunction<Env> = async (context) => {
   const { request, env, params } = context;
 
@@ -144,6 +183,9 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     } catch (_error) {
       // Return a consistent not-found response.
     }
+
+    const legacyAudio = await fetchLegacyPublicAudio(cleanKey, request);
+    if (legacyAudio) return legacyAudio;
   }
 
   return new Response(JSON.stringify({ error: 'Not found', key: cleanKey }), {

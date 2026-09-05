@@ -105,7 +105,45 @@ function cleanFilename(fn?: string): string {
   return fn.split('/').pop()!.split('\\').pop()!;
 }
 
-async function fetchR2Object(env: Env, bucketName: 'coursesimages' | 'courses' | 'harby', key: string): Promise<Response | null> {
+async function fetchLegacyPublicAudio(cleanKey: string, request: Request): Promise<Response | null> {
+  const match = cleanKey.match(/^classrooms\/([^/]+)\/(u\d+)\/(l\d+)\/([^/]+)\/tts\/scene_(\d+)_speech_(\d+)\.mp3$/i);
+  if (!match) return null;
+
+  const [, subject, unit, lesson, classroomId, sceneIndexText, speechIndexText] = match;
+  try {
+    const manifestUrl = `${PUBLIC_R2_COURSES}/classrooms/${subject}/${unit}/${lesson}/${classroomId}/classdata.json`;
+    const manifestResponse = await fetch(manifestUrl);
+    if (!manifestResponse.ok) return null;
+    const manifest = await manifestResponse.json() as any;
+    const sceneIndex = Number(sceneIndexText);
+    const speechIndex = Number(speechIndexText);
+    const actions = Array.isArray(manifest?.scenes?.[sceneIndex]?.actions)
+      ? manifest.scenes[sceneIndex].actions.filter((action: any) => action?.type === 'speech' || action?.type === 'speak' || action?.audio || action?.audioUrl)
+      : [];
+    const action = actions[speechIndex];
+    const audioId = action?.audioId || String(action?.audioUrl || '').match(/\/audio\/([^/?#]+)\.mp3/i)?.[1];
+    if (!audioId) return null;
+
+    const audioUrl = `https://open.maic.chat/api/classroom-media/${encodeURIComponent(classroomId)}/audio/${encodeURIComponent(audioId)}.mp3`;
+    const headers = new Headers();
+    const range = request.headers.get('Range');
+    if (range) headers.set('Range', range);
+    const audioResponse = await fetch(audioUrl, { method: request.method, headers });
+    if (!audioResponse.ok && audioResponse.status !== 206) return null;
+    const responseHeaders = new Headers(audioResponse.headers);
+    responseHeaders.set('Content-Type', 'audio/mpeg');
+    responseHeaders.set('Cache-Control', 'private, max-age=3600');
+    responseHeaders.set('Accept-Ranges', 'bytes');
+    return new Response(request.method === 'HEAD' ? null : audioResponse.body, {
+      status: audioResponse.status,
+      headers: responseHeaders,
+    });
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function fetchR2Object(env: Env, bucketName: 'coursesimages' | 'courses' | 'harby', key: string, request?: Request): Promise<Response | null> {
   const cleanKey = key.replace(/^\/+/, '');
   
   if (bucketName === 'coursesimages') {
@@ -181,6 +219,10 @@ async function fetchR2Object(env: Env, bucketName: 'coursesimages' | 'courses' |
           return new Response(pubRes.body, { headers });
         }
       } catch (_e) {}
+      if (request) {
+        const legacyAudio = await fetchLegacyPublicAudio(cleanKey, request);
+        if (legacyAudio) return legacyAudio;
+      }
     }
   }
 
@@ -1312,7 +1354,7 @@ export default {
 
       // Check if client is requesting classdata.json or export.json -> normalize audio URLs
       if (key.endsWith('.json')) {
-        const res = await fetchR2Object(env, 'courses', key);
+        const res = await fetchR2Object(env, 'courses', key, req);
         if (res) {
           try {
             const rawJson = await res.json();
@@ -1337,7 +1379,7 @@ export default {
       }
 
       // Serve binary / audio / other assets directly
-      const assetRes = await fetchR2Object(env, 'courses', key);
+      const assetRes = await fetchR2Object(env, 'courses', key, req);
       if (assetRes) return assetRes;
 
       return new Response('Classroom asset not found', { status: 404, headers: CORS });
@@ -1349,7 +1391,7 @@ export default {
       const key = subKey.startsWith('classrooms/') ? subKey : subKey;
 
       // 1. Try static pre-rendered HTML in R2
-      const res = await fetchR2Object(env, 'courses', key);
+      const res = await fetchR2Object(env, 'courses', key, req);
       if (res) return res;
 
       // 2. If not found in R2, dynamically render lesson HTML
