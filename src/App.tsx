@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from 'react';
 
 const PrintedPagesViewer = lazy(() =>
   import('./pages/PrintedPagesViewer').then(({ PrintedPagesViewer: component }) => ({ default: component })),
@@ -32,6 +32,47 @@ function getInitialRoute(): string {
   return 'classroom';
 }
 
+interface AppErrorBoundaryProps {
+  children: ReactNode;
+}
+
+interface AppErrorBoundaryState {
+  hasError: boolean;
+  message: string;
+}
+
+class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundaryState> {
+  state: AppErrorBoundaryState = { hasError: false, message: '' };
+
+  static getDerivedStateFromError(error: Error): AppErrorBoundaryState {
+    return { hasError: true, message: error?.message || 'Unknown application error' };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('CourseViewer route failed to render', error, info.componentStack);
+  }
+
+  handleRetry = () => {
+    if (typeof window !== 'undefined') window.location.reload();
+  };
+
+  render() {
+    if (!this.state.hasError) return this.props.children;
+
+    return (
+      <main className="min-h-screen flex items-center justify-center bg-slate-950 px-6 text-slate-100">
+        <section role="alert" className="w-full max-w-md rounded-3xl border border-rose-400/20 bg-rose-950/30 p-7 text-center shadow-2xl">
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-400/15 text-2xl text-rose-200">!</div>
+          <h1 className="text-lg font-bold">تعذر تشغيل الواجهة</h1>
+          <p className="mt-3 text-sm leading-7 text-rose-100/75">حدث خطأ غير متوقع أثناء تحميل الدرس. أعد المحاولة، وإذا استمر الخطأ تواصل مع مسؤول النظام.</p>
+          {this.state.message && <p className="mt-3 break-words text-xs text-slate-400">{this.state.message}</p>}
+          <button type="button" onClick={this.handleRetry} className="mt-6 rounded-xl bg-cyan-400 px-5 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-cyan-300 active:scale-95">إعادة المحاولة</button>
+        </section>
+      </main>
+    );
+  }
+}
+
 function RouteLoading() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-300">
@@ -53,11 +94,13 @@ export default function App() {
   }, []);
 
   return (
-    <Suspense fallback={<RouteLoading />}>
+    <AppErrorBoundary>
+      <Suspense fallback={<RouteLoading />}>
       {currentRoute === 'html' ? <HtmlLessonViewer /> : null}
       {currentRoute === 'printed' ? <PrintedPagesViewer /> : null}
       {currentRoute === 'test' ? <TestShowcase /> : null}
       {currentRoute === 'classroom' ? <ClassroomPlayerPage /> : null}
-    </Suspense>
+      </Suspense>
+    </AppErrorBoundary>
   );
 }
