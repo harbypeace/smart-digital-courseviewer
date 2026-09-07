@@ -71,8 +71,8 @@ class ClassroomErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundary
           <div className="max-w-md p-6 bg-rose-950/40 border border-rose-800/60 rounded-2xl space-y-3">
             <AlertCircle className="w-10 h-10 text-rose-400 mx-auto" />
             <h3 className="text-sm font-black text-rose-200">خطأ في تقديم المشهد التفاعلي</h3>
-            <p className="text-xs text-rose-300/80 leading-relaxed font-mono">
-              {this.state.error?.message || 'حدث خطأ غير متوقع أثناء معالجة عناصر الشريحة'}
+            <p className="text-xs text-rose-300/80 leading-relaxed">
+              حدث خطأ غير متوقع أثناء معالجة عناصر الشريحة. أعد المحاولة، وإذا استمر الخطأ تواصل مع مسؤول النظام.
             </p>
             <button
               onClick={() => this.setState({ hasError: false, error: null })}

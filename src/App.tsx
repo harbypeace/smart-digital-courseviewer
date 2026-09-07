@@ -38,14 +38,13 @@ interface AppErrorBoundaryProps {
 
 interface AppErrorBoundaryState {
   hasError: boolean;
-  message: string;
 }
 
 class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundaryState> {
-  state: AppErrorBoundaryState = { hasError: false, message: '' };
+  state: AppErrorBoundaryState = { hasError: false };
 
-  static getDerivedStateFromError(error: Error): AppErrorBoundaryState {
-    return { hasError: true, message: error?.message || 'Unknown application error' };
+  static getDerivedStateFromError(_error: Error): AppErrorBoundaryState {
+    return { hasError: true };
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
@@ -65,7 +64,6 @@ class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundary
           <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-400/15 text-2xl text-rose-200">!</div>
           <h1 className="text-lg font-bold">تعذر تشغيل الواجهة</h1>
           <p className="mt-3 text-sm leading-7 text-rose-100/75">حدث خطأ غير متوقع أثناء تحميل الدرس. أعد المحاولة، وإذا استمر الخطأ تواصل مع مسؤول النظام.</p>
-          {this.state.message && <p className="mt-3 break-words text-xs text-slate-400">{this.state.message}</p>}
           <button type="button" onClick={this.handleRetry} className="mt-6 rounded-xl bg-cyan-400 px-5 py-2.5 text-sm font-bold text-slate-950 transition hover:bg-cyan-300 active:scale-95">إعادة المحاولة</button>
         </section>
       </main>
