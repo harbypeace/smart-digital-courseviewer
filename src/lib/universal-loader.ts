@@ -9,6 +9,18 @@ import { appendAuthToken } from './utils';
 
 export type UniversalSourceType = 'zip' | 'folder' | 'json' | 'classid';
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: init.signal ?? controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 export interface UniversalLoadOptions {
   mediaBaseUrl?: string;
   workerUrl?: string;
@@ -221,7 +233,7 @@ export async function loadUniversalFromZip(
     // 1. Try server-side progressive streaming API first (instant manifest load)
     try {
       const streamApiUrl = appendAuthToken(`/api/classroom-zip/data?zip=${encodeURIComponent(zipInput)}`);
-      const apiRes = await fetch(streamApiUrl);
+      const apiRes = await fetchWithTimeout(streamApiUrl);
       if (apiRes.ok) {
         const json = await apiRes.json() as any;
         if (json?.data) {
@@ -238,7 +250,7 @@ export async function loadUniversalFromZip(
       // Fall through to full ZIP fetch
     }
 
-    const res = await fetch(appendAuthToken(zipInput));
+    const res = await fetchWithTimeout(appendAuthToken(zipInput));
     if (!res.ok) throw new Error(`Failed to fetch ZIP from URL: HTTP ${res.status}`);
     zipBlob = await res.blob();
   } else if (zipInput instanceof ArrayBuffer) {
@@ -290,7 +302,7 @@ export async function loadUniversalFromJson(
   } else if (typeof jsonInput === 'string') {
     const trimmed = jsonInput.trim();
     if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-      const res = await fetch(appendAuthToken(trimmed));
+      const res = await fetchWithTimeout(appendAuthToken(trimmed));
       if (!res.ok) throw new Error(`Failed to fetch JSON from URL (HTTP ${res.status})`);
       text = await res.text();
     } else {
@@ -386,7 +398,7 @@ export async function loadUniversalFromClassId(
 
   for (const zipUrl of zipCandidates) {
     try {
-      const res = await fetch(appendAuthToken(zipUrl), { method: 'HEAD' });
+      const res = await fetchWithTimeout(appendAuthToken(zipUrl), { method: 'HEAD' });
       if (res.ok) {
         return await loadUniversalFromZip(zipUrl, options);
       }
@@ -404,7 +416,7 @@ export async function loadUniversalFromClassId(
 
   for (const jsonUrl of jsonCandidates) {
     try {
-      const res = await fetch(appendAuthToken(jsonUrl));
+      const res = await fetchWithTimeout(appendAuthToken(jsonUrl));
       if (res.ok) {
         const ct = res.headers.get('content-type') || '';
         if (ct.includes('zip') || jsonUrl.endsWith('.zip')) {
