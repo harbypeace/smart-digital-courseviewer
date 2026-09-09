@@ -95,6 +95,16 @@ class ClassroomErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundary
  * Deduplicates speech actions where the first leg was repeated during TTS generation
  * or adjacent dialogue lines have repeated duplicate texts in the JSON.
  */
+async function fetchClassroomWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 20_000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: init.signal ?? controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 function deduplicateSpeechActions(scenes: any[]): void {
   if (!Array.isArray(scenes) || scenes.length === 0) return;
 
@@ -482,10 +492,10 @@ export function ClassroomPlayerPage() {
       );
 
       if (allSpeeches.length > 0) {
-        const testTtsUrl = `/api/courses/classrooms/${sub}/${u}/${l}/${cId}/tts/scene_00_speech_00.mp3`;
+        const testTtsUrl = appendAuthToken(`/api/courses/classrooms/${sub}/${u}/${l}/${cId}/tts/scene_00_speech_00.mp3`);
         const ctrl = new AbortController();
-        const tId = setTimeout(() => ctrl.abort(), 1000);
-        fetch(testTtsUrl, { method: 'HEAD', signal: ctrl.signal })
+        const tId = window.setTimeout(() => ctrl.abort(), 1000);
+        fetchClassroomWithTimeout(testTtsUrl, { method: 'HEAD', signal: ctrl.signal }, 2_000)
           .then((probe) => {
             clearTimeout(tId);
             if (probe.ok) {
@@ -510,7 +520,7 @@ export function ClassroomPlayerPage() {
       // 2. If explicit JSON URL provided
       if (jsonUrl) {
         setLoadingMsg('جاري تحميل ملف JSON...');
-        const res = await fetch(appendAuthToken(jsonUrl));
+        const res = await fetchClassroomWithTimeout(appendAuthToken(jsonUrl));
         if (!res.ok) throw new Error(`فشل تحميل JSON: ${res.status}`);
         const text = await res.text();
         const d = await loadUniversalFromJson(text);
