@@ -394,6 +394,7 @@ export function ClassroomPlayerPage() {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const dataRef = useRef<ClassroomData | null>(null);
+  const loadGenerationRef = useRef(0);
   dataRef.current = data;
 
   const handleZipFile = useCallback(async (file: File) => {
@@ -423,6 +424,8 @@ export function ClassroomPlayerPage() {
   }, [subjectCode, unitCode, lessonCode, classroomId, currentZipUrl, customAudioMap]);
 
   const loadClassroom = useCallback(async () => {
+    const generation = ++loadGenerationRef.current;
+    const isCurrentLoad = () => loadGenerationRef.current === generation;
     setLoading(true);
     setError(null);
     setLoadingMsg('جاري جلب بيانات الدرس التفاعلي من الخادم الآمن...');
@@ -472,6 +475,7 @@ export function ClassroomPlayerPage() {
       cId: string,
       zUrl?: string
     ) => {
+      if (!isCurrentLoad()) return;
       setRawData(raw);
 
       // Render immediately with original audio without waiting for slow network probes
@@ -498,7 +502,7 @@ export function ClassroomPlayerPage() {
         fetchClassroomWithTimeout(testTtsUrl, { method: 'HEAD', signal: ctrl.signal }, 2_000)
           .then((probe) => {
             clearTimeout(tId);
-            if (probe.ok) {
+            if (probe.ok && isCurrentLoad()) {
               setHasTts(true);
               setVoiceSource('tts');
               setData(applyVoiceSource(raw, 'tts', sub, u, l, cId, zUrl, customAudioMap));
@@ -571,16 +575,19 @@ export function ClassroomPlayerPage() {
       throw new Error('لم يتم العثور على معلمات صالحة للغرفة الصفية (subject / classId).');
     } catch (err: any) {
       console.error('Classroom loading error:', err);
-      setError(err?.message || 'حدث خطأ أثناء تحميل الغرفة الصفية');
-      setData(null);
+      if (isCurrentLoad()) {
+        setError(err?.message || 'حدث خطأ أثناء تحميل الغرفة الصفية');
+        setData(null);
+      }
     } finally {
-      setLoading(false);
+      if (isCurrentLoad()) setLoading(false);
     }
   }, [customAudioMap]);
 
   useEffect(() => {
     loadClassroom();
     return () => {
+      loadGenerationRef.current += 1;
       if (dataRef.current) revokeUniversalUrls(dataRef.current);
     };
   }, [loadClassroom]);
