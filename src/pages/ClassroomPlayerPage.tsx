@@ -541,7 +541,7 @@ export function ClassroomPlayerPage() {
           ...(classId ? { id: classId } : {}),
         });
 
-        const apiRes = await fetch(appendAuthToken(`/api/classroom-data?${query.toString()}`));
+        const apiRes = await fetchClassroomWithTimeout(appendAuthToken(`/api/classroom-data?${query.toString()}`));
         if (apiRes.ok) {
           const resJson = (await apiRes.json()) as any;
           if (resJson?.data) {
@@ -555,7 +555,7 @@ export function ClassroomPlayerPage() {
         // 4. Direct private proxy candidates fallback
         if (subject && classId) {
           const directProxyUrl = `${PRIVATE_COURSES_PROXY}/classrooms/${subject}/${unit}/${lesson}/${classId}/classdata.json`;
-          const directRes = await fetch(appendAuthToken(directProxyUrl));
+          const directRes = await fetchClassroomWithTimeout(appendAuthToken(directProxyUrl));
           if (directRes.ok) {
             const text = await directRes.text();
             const d = await loadUniversalFromJson(text);
