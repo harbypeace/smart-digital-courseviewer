@@ -626,6 +626,13 @@ export function ClassroomPlayerPage() {
     }
   };
 
+  const readFileAsDataUrl = (file: File): Promise<string> => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error('تعذر قراءة الملف الصوتي'));
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.readAsDataURL(file);
+  });
+
   // Upload custom voice audio via Worker POST API
   const handleCustomAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -635,54 +642,48 @@ export function ClassroomPlayerPage() {
     setVoiceUploadSuccess(null);
 
     try {
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const base64 = reader.result as string;
-        const payload = {
-          action: 'upload_audio',
-          subject: subjectCode,
-          unit: unitCode,
-          lesson: lessonCode,
-          classroomId,
-          sceneIndex: selectedSceneForUpload,
-          speechIndex: selectedSpeechForUpload,
-          audioBase64: base64,
-          voiceProfileId: selectedVoiceProfile,
-          speed: speechSpeed,
-          pitch: speechPitch,
-        };
-
-        const res = await fetch(appendAuthToken('/api/custom-voice'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-
-        if (res.ok) {
-          const resData = await res.json();
-          const actionKey = `${selectedSceneForUpload}_${selectedSpeechForUpload}`;
-          const newMap = new Map(customAudioMap);
-          newMap.set(actionKey, resData.audioUrl ? appendAuthToken(resData.audioUrl) : base64);
-          setCustomAudioMap(newMap);
-
-          if (rawData) {
-            const updated = applyVoiceSource(rawData, 'custom', subjectCode, unitCode, lessonCode, classroomId, currentZipUrl, newMap);
-            setData(updated);
-            setVoiceSource('custom');
-          }
-
-          setVoiceUploadSuccess('تم رفع الصوت المخصص وربطه بالمشهد بنجاح!');
-          setTimeout(() => setVoiceUploadSuccess(null), 4000);
-        } else {
-          throw new Error(`Worker returned HTTP ${res.status}`);
-        }
+      const base64 = await readFileAsDataUrl(file);
+      const payload = {
+        action: 'upload_audio',
+        subject: subjectCode,
+        unit: unitCode,
+        lesson: lessonCode,
+        classroomId,
+        sceneIndex: selectedSceneForUpload,
+        speechIndex: selectedSpeechForUpload,
+        audioBase64: base64,
+        voiceProfileId: selectedVoiceProfile,
+        speed: speechSpeed,
+        pitch: speechPitch,
       };
-      reader.readAsDataURL(file);
+
+      const res = await fetchClassroomWithTimeout(appendAuthToken('/api/custom-voice'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) throw new Error(`Worker returned HTTP ${res.status}`);
+      const resData = await res.json();
+      const actionKey = `${selectedSceneForUpload}_${selectedSpeechForUpload}`;
+      const newMap = new Map(customAudioMap);
+      newMap.set(actionKey, resData.audioUrl ? appendAuthToken(resData.audioUrl) : base64);
+      setCustomAudioMap(newMap);
+
+      if (rawData) {
+        const updated = applyVoiceSource(rawData, 'custom', subjectCode, unitCode, lessonCode, classroomId, currentZipUrl, newMap);
+        setData(updated);
+        setVoiceSource('custom');
+      }
+
+      setVoiceUploadSuccess('تم رفع الصوت المخصص وربطه بالمشهد بنجاح!');
+      setTimeout(() => setVoiceUploadSuccess(null), 4000);
     } catch (err: any) {
       console.error('Custom voice upload failed:', err);
       alert('تعذر حفظ الصوت المخصص: ' + (err?.message || 'خطأ في الاتصال'));
     } finally {
       setIsUploadingVoice(false);
+      e.target.value = '';
     }
   };
 
@@ -690,7 +691,7 @@ export function ClassroomPlayerPage() {
   const handleApplyVoiceProfile = async () => {
     setIsUploadingVoice(true);
     try {
-      const res = await fetch(appendAuthToken('/api/custom-voice'), {
+      const res = await fetchClassroomWithTimeout(appendAuthToken('/api/custom-voice'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -770,7 +771,7 @@ export function ClassroomPlayerPage() {
         const item = speechItems[i];
         setTtsProgressMsg(`جاري التوليد (${i + 1}/${speechItems.length}): مشهد ${item.sceneIdx + 1} - حوار ${item.speechIdx + 1}...`);
 
-        const res = await fetch('/api/custom-voice', {
+        const res = await fetchClassroomWithTimeout(appendAuthToken('/api/custom-voice'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
