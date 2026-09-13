@@ -12,6 +12,16 @@ function cleanCandidatePath(path: string): string {
   return path.replace(/^\/+/, '').replace(/^api\/courses\//, '');
 }
 
+async function headWithTimeout(input: RequestInfo | URL, timeoutMs = 12_000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { method: 'HEAD', cache: 'no-store', signal: controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 function getPageParams() {
   const params = new URLSearchParams(window.location.search);
   const subject = params.get('subject') || 'hadith11';
@@ -61,7 +71,7 @@ export function HtmlLessonViewer() {
     for (let index = 0; index < nextCandidates.length; index += 1) {
       const candidate = appendAuthToken(nextCandidates[index]);
       try {
-        const response = await fetch(candidate, { method: 'HEAD', cache: 'no-store' });
+        const response = await headWithTimeout(candidate);
         if (response.ok) {
           setActiveIndex(index);
           setIsResolving(false);
