@@ -12,12 +12,40 @@ export const PUBLIC_R2_IMAGES = 'https://pub-82c5ce36837a4c7e8093a3bb8ff74057.r2
 export const PRIVATE_COURSES_PROXY = '/api/courses';
 export const R2_COURSES_BASE = 'https://pub-a7d6ac39d1654484ad48d9a264e93d51.r2.dev';
 
+const AUTH_TOKEN_STORAGE_KEY = 'courseviewer_jwt_token';
+
 /** Read the token from the supported URL transport used by iframe/audio embeds. */
 export function getAuthTokenFromLocation(): string | null {
   if (typeof window === 'undefined') return null;
   const params = new URLSearchParams(window.location.search);
-  const token = params.get('token') || params.get('jwt');
-  return token?.trim() || null;
+  const token = (params.get('token') || params.get('jwt'))?.trim();
+  if (token) {
+    try {
+      window.sessionStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+    } catch (_error) {
+      // Storage can be unavailable in privacy-restricted browser contexts.
+    }
+    return token;
+  }
+  try {
+    return window.sessionStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+  } catch (_error) {
+    return null;
+  }
+}
+
+/** Capture a URL token for this tab and remove it from the visible URL/history. */
+export function captureAndScrubAuthToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  const token = getAuthTokenFromLocation();
+  const url = new URL(window.location.href);
+  const hadQueryToken = url.searchParams.has('token') || url.searchParams.has('jwt');
+  if (hadQueryToken) {
+    url.searchParams.delete('token');
+    url.searchParams.delete('jwt');
+    window.history.replaceState(window.history.state, document.title, `${url.pathname}${url.search}${url.hash}`);
+  }
+  return token;
 }
 
 /** Append the current JWT only to same-origin protected requests. */

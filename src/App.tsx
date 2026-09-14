@@ -1,4 +1,5 @@
 import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from 'react';
+import { captureAndScrubAuthToken } from './lib/utils';
 
 const PrintedPagesViewer = lazy(() =>
   import('./pages/PrintedPagesViewer').then(({ PrintedPagesViewer: component }) => ({ default: component })),
@@ -86,6 +87,7 @@ export default function App() {
   const [currentRoute, setCurrentRoute] = useState<string>(getInitialRoute);
 
   useEffect(() => {
+    captureAndScrubAuthToken();
     const handlePopState = () => setCurrentRoute(getInitialRoute());
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
