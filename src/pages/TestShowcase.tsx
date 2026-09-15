@@ -14,7 +14,17 @@ import {
   FileArchive,
   Upload,
 } from 'lucide-react';
-import { cleanUnitCode, cleanLessonCode } from '../lib/utils';
+import { appendAuthToken, cleanUnitCode, cleanLessonCode } from '../lib/utils';
+
+async function diagnosticFetch(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 12_000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: init.signal ?? controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
 
 type ActiveTab = 'classroom' | 'zip' | 'printed' | 'diagnostics';
 
@@ -175,7 +185,7 @@ export function TestShowcase() {
     try {
       const zUrl = `/api/classroom-zip/data?zip=${encodeURIComponent(zipUrl)}`;
       const t0 = performance.now();
-      const res = await fetch(zUrl);
+      const res = await diagnosticFetch(appendAuthToken(zUrl));
       const duration = Math.round(performance.now() - t0);
       const json = await res.json();
       results.push({
@@ -195,7 +205,7 @@ export function TestShowcase() {
     try {
       const cUrl = `/api/classroom-data?subject=${subject}&unit=${unit}&lesson=${lesson}&id=${classroomId}`;
       const t0 = performance.now();
-      const res = await fetch(cUrl);
+      const res = await diagnosticFetch(appendAuthToken(cUrl));
       const duration = Math.round(performance.now() - t0);
       const json = await res.json();
       results.push({
@@ -215,7 +225,7 @@ export function TestShowcase() {
     try {
       const imgUrl = `https://pub-82c5ce36837a4c7e8093a3bb8ff74057.r2.dev/${subject}/${unit}/${lesson}/page-${startPage}-w900.webp`;
       const t0 = performance.now();
-      const res = await fetch(imgUrl, { method: 'HEAD' });
+      const res = await diagnosticFetch(imgUrl, { method: 'HEAD' });
       const duration = Math.round(performance.now() - t0);
       results.push({
         name: 'Public Images CDN (coursesimages)',
