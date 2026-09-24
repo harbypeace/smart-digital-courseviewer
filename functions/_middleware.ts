@@ -11,11 +11,24 @@ function getCorsHeaders(request: Request, env: Env): Record<string, string> {
     .map((origin) => origin.trim())
     .filter(Boolean);
 
+  const isAllowedOrigin = (origin: string): boolean => {
+    if (
+      configuredOrigins.includes(origin) ||
+      origin === 'https://lms-yemen.com' ||
+      origin.endsWith('.lms-yemen.com') ||
+      origin.startsWith('http://localhost:') ||
+      origin.startsWith('http://127.0.0.1:')
+    ) {
+      return true;
+    }
+    return false;
+  };
+
   const allowOrigin = configuredOrigins.length === 0
     ? (requestOrigin || '*')
-    : requestOrigin && configuredOrigins.includes(requestOrigin)
+    : requestOrigin && isAllowedOrigin(requestOrigin)
       ? requestOrigin
-      : 'null';
+      : (requestOrigin || '*');
 
   return {
     'Access-Control-Allow-Origin': allowOrigin,
@@ -32,9 +45,13 @@ function withCors(response: Response, request: Request, env: Env): Response {
   for (const [key, value] of Object.entries(getCorsHeaders(request, env))) {
     headers.set(key, value);
   }
-  headers.set('Referrer-Policy', 'no-referrer');
+  headers.set('Referrer-Policy', 'no-referrer-when-downgrade');
   headers.set('X-Content-Type-Options', 'nosniff');
-  headers.set('X-Frame-Options', 'SAMEORIGIN');
+  headers.delete('X-Frame-Options');
+  headers.set(
+    'Content-Security-Policy',
+    "frame-ancestors 'self' https://lms-yemen.com https://*.lms-yemen.com http://localhost:* http://127.0.0.1:*"
+  );
   headers.set('Permissions-Policy', 'camera=(), geolocation=(), microphone=()');
   return new Response(response.body, {
     status: response.status,

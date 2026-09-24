@@ -15,7 +15,7 @@
     }
   ],
   "vars": {
-    "ALLOWED_ORIGINS": "http://localhost:5173,http://localhost:3000,https://courseviewer.pages.dev,https://courseviewer.lms-yemen.com",
+    "ALLOWED_ORIGINS": "http://localhost:5173,http://localhost:3000,https://courseviewer.pages.dev,https://courseviewer.lms-yemen.com,https://lms-yemen.com",
     "ALLOW_PUBLIC_R2_FALLBACK": "false"
   }
   // Set JWT_SECRET with `wrangler pages secret put JWT_SECRET` in production.

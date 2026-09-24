@@ -4,6 +4,7 @@
   Access-Control-Allow-Methods: GET, HEAD, OPTIONS
   Access-Control-Allow-Headers: *
   X-Content-Type-Options: nosniff
+  Content-Security-Policy: frame-ancestors 'self' https://lms-yemen.com https://*.lms-yemen.com http://localhost:* http://127.0.0.1:*
 
 # Assets Cache
 /assets/*
