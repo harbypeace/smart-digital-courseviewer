@@ -280,6 +280,7 @@ export function ClassroomPlayerPage() {
     if (typeof window !== 'undefined' && window.innerWidth < 768) {
       scriptTimerRef.current = setTimeout(() => {
         setShowScriptPanel(false);
+        setShowScenesSidebar(false);
       }, 3000);
     }
   }, []);
@@ -293,9 +294,9 @@ export function ClassroomPlayerPage() {
   }, []);
 
   useEffect(() => {
-    if (showScriptPanel && isMobile) {
+    if ((showScriptPanel || showScenesSidebar) && isMobile) {
       resetScriptAutoHide();
-    } else if (scriptTimerRef.current) {
+    } else if (!showScriptPanel && !showScenesSidebar && scriptTimerRef.current) {
       clearTimeout(scriptTimerRef.current);
       scriptTimerRef.current = null;
     }
@@ -304,7 +305,7 @@ export function ClassroomPlayerPage() {
         clearTimeout(scriptTimerRef.current);
       }
     };
-  }, [showScriptPanel, isMobile, resetScriptAutoHide]);
+  }, [showScriptPanel, showScenesSidebar, isMobile, resetScriptAutoHide]);
 
   // Mobile landscape YouTube-style actions bar autohide
   const [isMobileLandscape, setIsMobileLandscape] = useState(() => {
@@ -1166,7 +1167,11 @@ export function ClassroomPlayerPage() {
 
         {/* ── Sidebar 2: Scenes List Drawer (Rendered only as sidebar, closes script when open) ── */}
         {showScenesSidebar && (
-          <aside className={`h-full bg-slate-900/95 border-r border-slate-800 flex flex-col shrink-0 shadow-2xl backdrop-blur-md transition-all duration-300 z-30 animate-in slide-in-from-right duration-200 ${
+          <aside
+            onTouchStart={resetScriptAutoHide}
+            onPointerDown={resetScriptAutoHide}
+            onScroll={resetScriptAutoHide}
+            className={`h-full bg-slate-900/95 border-r border-slate-800 flex flex-col shrink-0 shadow-2xl backdrop-blur-md transition-all duration-300 z-30 animate-in slide-in-from-right duration-200 ${
             isMobile
               ? 'fixed right-0 top-0 bottom-16 w-80 max-w-[85vw] border-l border-slate-800'
               : 'relative w-80 sm:w-96 lg:w-[420px]'
