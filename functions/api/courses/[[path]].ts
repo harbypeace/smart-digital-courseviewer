@@ -87,24 +87,52 @@ function isEnabled(value?: string): boolean {
   return value === '1' || value?.toLowerCase() === 'true' || value?.toLowerCase() === 'yes';
 }
 
-async function fetchLegacyPublicAudio(cleanKey: string, request: Request): Promise<Response | null> {
+async function fetchLegacyPublicAudio(cleanKey: string, request: Request, env?: Env): Promise<Response | null> {
   const match = cleanKey.match(/^classrooms\/([^/]+)\/(u\d+)\/(l\d+)\/([^/]+)\/tts\/scene_(\d+)_speech_(\d+)\.mp3$/i);
   if (!match) return null;
 
   const [, subject, unit, lesson, classroomId, sceneIndexText, speechIndexText] = match;
   try {
-    const manifestUrl = `${PUBLIC_R2_COURSES}/classrooms/${subject}/${unit}/${lesson}/${classroomId}/classdata.json`;
-    const manifestResponse = await fetch(manifestUrl);
-    if (!manifestResponse.ok) return null;
-    const manifest = await manifestResponse.json() as any;
+    let manifest: any = null;
+    const manifestKey = `classrooms/${subject}/${unit}/${lesson}/${classroomId}/classdata.json`;
+    if (env?.COURSES) {
+      try {
+        const obj = await env.COURSES.get(manifestKey);
+        if (obj) manifest = await obj.json();
+      } catch (_e) {}
+    }
+
+    if (!manifest) {
+      const manifestUrl = `${PUBLIC_R2_COURSES}/${manifestKey}`;
+      const manifestResponse = await fetch(manifestUrl);
+      if (manifestResponse.ok) manifest = await manifestResponse.json();
+    }
+
+    if (!manifest) return null;
+
     const sceneIndex = Number(sceneIndexText);
     const speechIndex = Number(speechIndexText);
     const actions = Array.isArray(manifest?.scenes?.[sceneIndex]?.actions)
-      ? manifest.scenes[sceneIndex].actions.filter((action: any) => action?.type === 'speech' || action?.type === 'speak' || action?.audio || action?.audioUrl)
+      ? manifest.scenes[sceneIndex].actions.filter((action: any) => action?.type === 'speech' || action?.type === 'speak' || action?.audio || action?.audioUrl || action?.url)
       : [];
     const action = actions[speechIndex];
-    const audioId = action?.audioId || String(action?.audioUrl || '').match(/\/audio\/([^/?#]+)\.mp3/i)?.[1];
+    const raw = action?.audioUrl || action?.url || action?.audioRef || '';
+    const matchId = String(raw).match(/(?:^|\/)audio\/([^/?#]+)\.(?:mp3|wav)/i);
+    const audioId = action?.audioId || matchId?.[1] || (raw && !String(raw).startsWith('http') ? String(raw).split('/').pop()?.replace(/\.(mp3|wav)$/i, '') : '');
     if (!audioId) return null;
+
+    // Check R2 courses bucket first
+    if (env?.COURSES) {
+      try {
+        const audioKey = `classrooms/${subject}/${unit}/${lesson}/${classroomId}/audio/${audioId}.mp3`;
+        const obj = await env.COURSES.get(audioKey);
+        if (obj) return objectResponse(request, obj, 'audio/mpeg');
+
+        const audioWavKey = `classrooms/${subject}/${unit}/${lesson}/${classroomId}/audio/${audioId}.wav`;
+        const wavObj = await env.COURSES.get(audioWavKey);
+        if (wavObj) return objectResponse(request, wavObj, 'audio/wav');
+      } catch (_e) {}
+    }
 
     const audioUrl = `${PUBLIC_OPENMAIC_MEDIA}/${encodeURIComponent(classroomId)}/audio/${encodeURIComponent(audioId)}.mp3`;
     const headers = new Headers();
@@ -150,6 +178,17 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     try {
       const object = await env.COURSES.get(cleanKey, getOptions);
       if (object) return objectResponse(request, object, mime);
+
+      // Check alternate audio format (.mp3 <-> .wav)
+      if (cleanKey.endsWith('.mp3')) {
+        const altKey = cleanKey.replace(/\.mp3$/i, '.wav');
+        const altObj = await env.COURSES.get(altKey, getOptions);
+        if (altObj) return objectResponse(request, altObj, 'audio/wav');
+      } else if (cleanKey.endsWith('.wav')) {
+        const altKey = cleanKey.replace(/\.wav$/i, '.mp3');
+        const altObj = await env.COURSES.get(altKey, getOptions);
+        if (altObj) return objectResponse(request, altObj, 'audio/mpeg');
+      }
     } catch (_error) {
       // Try the legacy classroom binding and optional diagnostic fallback.
     }
@@ -184,8 +223,34 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       // Return a consistent not-found response.
     }
 
-    const legacyAudio = await fetchLegacyPublicAudio(cleanKey, request);
+    const legacyAudio = await fetchLegacyPublicAudio(cleanKey, request, env);
     if (legacyAudio) return legacyAudio;
+  }
+
+  // Also try legacy audio resolver if key matches the tts pattern
+  const legacyAudio = await fetchLegacyPublicAudio(cleanKey, request, env);
+  if (legacyAudio) return legacyAudio;
+
+  // Fallback for direct audio assets: classrooms/.../audio/{filename}
+  const audioMatch = cleanKey.match(/^classrooms\/([^/]+)\/(u\d+)\/(l\d+)\/([^/]+)\/audio\/([^/]+)$/i);
+  if (audioMatch) {
+    const [, , , , classroomId, audioFile] = audioMatch;
+    try {
+      const audioUrl = `${PUBLIC_OPENMAIC_MEDIA}/${encodeURIComponent(classroomId)}/audio/${encodeURIComponent(audioFile)}`;
+      const headers = new Headers();
+      if (rangeHeader) headers.set('Range', rangeHeader);
+      const audioRes = await fetch(audioUrl, { method: request.method, headers });
+      if (audioRes.ok || audioRes.status === 206) {
+        const resHeaders = new Headers(audioRes.headers);
+        resHeaders.set('Content-Type', mime);
+        resHeaders.set('Cache-Control', 'private, max-age=3600');
+        resHeaders.set('Accept-Ranges', 'bytes');
+        return new Response(request.method === 'HEAD' ? null : audioRes.body, {
+          status: audioRes.status,
+          headers: resHeaders,
+        });
+      }
+    } catch (_e) {}
   }
 
   return new Response(JSON.stringify({ error: 'Not found', key: cleanKey }), {

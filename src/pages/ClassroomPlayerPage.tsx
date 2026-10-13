@@ -183,6 +183,7 @@ function applyVoiceSource(
   const l = cleanLessonCode(lesson);
   const cId = classId || clone.id || 'classroom';
   const baseTts = appendAuthToken(`/api/courses/classrooms/${subject}/${u}/${l}/${cId}/tts`);
+  const baseAudio = appendAuthToken(`/api/courses/classrooms/${subject}/${u}/${l}/${cId}/audio`);
   const defaultZip = appendAuthToken(zipUrl || `/api/courses/classrooms/${subject}/${u}/${l}/${cId}/classroom.zip`);
 
   if (Array.isArray(clone.scenes)) {
@@ -194,10 +195,15 @@ function applyVoiceSource(
         canvasElements.forEach((el: any) => {
           if ((el.type === 'image' || el.type === 'video') && el.src) {
             const rawSrc = String(el.src).trim();
-            if (!rawSrc.startsWith('data:') && !rawSrc.startsWith('blob:')) {
+            if (rawSrc.startsWith('data:') || rawSrc.startsWith('blob:')) {
+              // Local in-memory object -> keep as is
+            } else if (/^https?:\/\//i.test(rawSrc) || rawSrc.startsWith('//')) {
+              // External src -> keep as is (upgrade http to https)
+              el.src = rawSrc.replace(/^http:\/\//i, 'https://');
+            } else {
+              // Indicates local / relative path -> normalize to classroom-media proxy
               const filename = rawSrc.split('/').pop()?.split('?')[0];
               if (filename) {
-                // Check if imported into local public media or route via zip streamer
                 el.src = `/classroom-media/${cId}/media/${filename}`;
               }
             }
@@ -211,7 +217,13 @@ function applyVoiceSource(
         sc.actions.forEach((act: any) => {
           if (act.visualUrl) {
             const rawVis = String(act.visualUrl).trim();
-            if (!rawVis.startsWith('data:') && !rawVis.startsWith('blob:')) {
+            if (rawVis.startsWith('data:') || rawVis.startsWith('blob:')) {
+              // Local in-memory object -> keep as is
+            } else if (/^https?:\/\//i.test(rawVis) || rawVis.startsWith('//')) {
+              // External src -> keep as is (upgrade http to https)
+              act.visualUrl = rawVis.replace(/^http:\/\//i, 'https://');
+            } else {
+              // Indicates local / relative path -> normalize to classroom-media proxy
               const filename = rawVis.split('/').pop()?.split('?')[0];
               if (filename) {
                 act.visualUrl = `/classroom-media/${cId}/media/${filename}`;
@@ -219,7 +231,7 @@ function applyVoiceSource(
             }
           }
 
-          if (act.type === 'speech' || act.type === 'speak' || act.audio || act.audioUrl) {
+          if (act.type === 'speech' || act.type === 'speak' || act.audio || act.audioUrl || act.url) {
             const padScene = String(scIdx).padStart(2, '0');
             const padSpeech = String(speechIdx).padStart(2, '0');
             const actionKey = `${scIdx}_${speechIdx}`;
@@ -227,13 +239,49 @@ function applyVoiceSource(
             // Check if user uploaded or generated a custom override for this speech
             if (customAudioMap && customAudioMap.has(actionKey)) {
               act.audioUrl = customAudioMap.get(actionKey);
-            } else if (source === 'tts') {
-              act.audioUrl = `${baseTts}/scene_${padScene}_speech_${padSpeech}.mp3`;
+              act.url = act.audioUrl;
+            } else if (source === 'custom' && customAudioMap?.has(actionKey)) {
+              act.audioUrl = customAudioMap.get(actionKey);
+              act.url = act.audioUrl;
             } else {
-              // Original ZIP audio
-              const origFile = act.audioRef || act.audioId || `scene_${padScene}_speech_${padSpeech}`;
-              const cleanName = origFile.endsWith('.mp3') ? origFile : `${origFile}.mp3`;
-              act.audioUrl = appendAuthToken(`/api/classroom-zip/media?zip=${encodeURIComponent(defaultZip)}&file=audio/${encodeURIComponent(cleanName)}`);
+              const rawAudio = act.audioUrl || act.url || act.audioRef;
+              if (rawAudio && typeof rawAudio === 'string' && (rawAudio.startsWith('blob:') || rawAudio.startsWith('data:'))) {
+                // Keep local in-memory blob/data URL intact (e.g. from local file/ZIP)
+                act.audioUrl = rawAudio;
+                act.url = rawAudio;
+              } else if (rawAudio && typeof rawAudio === 'string' && (/^https?:\/\//i.test(rawAudio) || rawAudio.startsWith('//'))) {
+                // External src: keep external src, ensuring https protocol
+                act.audioUrl = rawAudio.replace(/^http:\/\//i, 'https://');
+                act.url = act.audioUrl;
+              } else {
+                // Indicates local / relative path (e.g. audio/... or filename or audioId) -> normalize to bucket path
+                let audioFilename = '';
+                if (rawAudio && typeof rawAudio === 'string') {
+                  const clean = rawAudio.split('?')[0].trim();
+                  const name = clean.split('/').pop();
+                  if (name) {
+                    audioFilename = name.endsWith('.mp3') || name.endsWith('.wav') ? name : `${name}.mp3`;
+                  }
+                } else if (act.audioId && typeof act.audioId === 'string') {
+                  const cleanId = act.audioId.trim();
+                  audioFilename = cleanId.endsWith('.mp3') || cleanId.endsWith('.wav') ? cleanId : `${cleanId}.mp3`;
+                }
+
+                if (source === 'original' && zipUrl) {
+                  // Explicit ZIP streaming
+                  const origFile = audioFilename || act.audioRef || act.audioId || `scene_${padScene}_speech_${padSpeech}.mp3`;
+                  act.audioUrl = appendAuthToken(`/api/classroom-zip/media?zip=${encodeURIComponent(defaultZip)}&file=audio/${encodeURIComponent(origFile)}`);
+                  act.url = act.audioUrl;
+                } else if (audioFilename) {
+                  // Direct audio from bucket / course
+                  act.audioUrl = `${baseAudio}/${audioFilename}`;
+                  act.url = act.audioUrl;
+                } else {
+                  // Fallback to legacy scene_XX_speech_YY
+                  act.audioUrl = `${baseTts}/scene_${padScene}_speech_${padSpeech}.mp3`;
+                  act.url = act.audioUrl;
+                }
+              }
             }
             speechIdx++;
           }
@@ -424,6 +472,32 @@ export function ClassroomPlayerPage() {
     }
   }, [subjectCode, unitCode, lessonCode, classroomId, currentZipUrl, customAudioMap]);
 
+  const handleJsonFile = useCallback(async (file: File) => {
+    setLoading(true);
+    setError(null);
+    setLoadingMsg(`جاري قراءة ملف البيانات: ${file.name}...`);
+    try {
+      const d = await loadUniversalFromJson(file);
+      setRawData(d);
+      const allSpeeches = (d.scenes || []).flatMap((s: any) =>
+        (s.actions || []).filter((a: any) => a.type === 'speech' || a.type === 'speak' || a.text || a.speech || a.audio || a.audioUrl || a.url)
+      );
+      const hasAudio = allSpeeches.some((s: any) => s.audioUrl || s.url || s.audioRef || s.audioId);
+      setHasTts(hasAudio);
+      const chosenVoice = 'tts';
+      setVoiceSource(chosenVoice);
+      const withVoice = applyVoiceSource(d, chosenVoice, subjectCode, unitCode, lessonCode, classroomId, currentZipUrl, customAudioMap);
+      setData(withVoice);
+      setActiveSceneIndex(0);
+      setActiveActionIndex(0);
+    } catch (err: any) {
+      console.error('Local JSON load error:', err);
+      setError(err?.message || 'فشل قراءة ملف JSON');
+    } finally {
+      setLoading(false);
+    }
+  }, [subjectCode, unitCode, lessonCode, classroomId, currentZipUrl, customAudioMap]);
+
   const loadClassroom = useCallback(async () => {
     const generation = ++loadGenerationRef.current;
     const isCurrentLoad = () => loadGenerationRef.current === generation;
@@ -479,9 +553,13 @@ export function ClassroomPlayerPage() {
       if (!isCurrentLoad()) return;
       setRawData(raw);
 
-      // Render immediately with original audio without waiting for slow network probes
-      const initialVoice = 'original';
-      setHasTts(false);
+      // Render immediately with initial voice without waiting for slow network probes
+      const allSpeeches = (raw.scenes || []).flatMap((s: any) =>
+        (s.actions || []).filter((a: any) => a.type === 'speech' || a.type === 'speak' || a.text || a.speech || a.audio || a.audioUrl || a.url)
+      );
+      const hasDirectAudio = allSpeeches.some((s: any) => s.audioUrl || s.url || s.audioRef || s.audioId);
+      const initialVoice = hasDirectAudio ? 'tts' : 'original';
+      setHasTts(hasDirectAudio);
       setVoiceSource(initialVoice);
 
       const withVoice = applyVoiceSource(raw, initialVoice, sub, u, l, cId, zUrl, customAudioMap);
@@ -492,11 +570,7 @@ export function ClassroomPlayerPage() {
       setLoading(false);
 
       // Non-blocking background probe for optional pre-generated TTS
-      const allSpeeches = (raw.scenes || []).flatMap((s: any) =>
-        (s.actions || []).filter((a: any) => a.type === 'speech' || a.type === 'speak' || a.text || a.speech)
-      );
-
-      if (allSpeeches.length > 0) {
+      if (allSpeeches.length > 0 && !hasDirectAudio) {
         const testTtsUrl = appendAuthToken(`/api/courses/classrooms/${sub}/${u}/${l}/${cId}/tts/scene_00_speech_00.mp3`);
         const ctrl = new AbortController();
         const tId = window.setTimeout(() => ctrl.abort(), 1000);
@@ -547,8 +621,25 @@ export function ClassroomPlayerPage() {
           const resJson = (await apiRes.json()) as any;
           if (resJson?.data) {
             const raw = resJson.data;
+            let realSub = subject;
+            let realU = unit;
+            let realL = lesson;
+            let realCId = classId;
+            if (resJson.key) {
+              const kMatch = String(resJson.key).match(/^classrooms\/([^/]+)\/(u\d+)\/(l\d+)\/([^/]+)/i);
+              if (kMatch) {
+                if (!params.get('subject') && !pathSubject) realSub = kMatch[1];
+                if (!params.get('unit') && !pathUnit) realU = kMatch[2];
+                if (!params.get('lesson') && !pathLesson) realL = kMatch[3];
+                if (!params.get('id') && !params.get('classroomId') && !pathClassId) realCId = kMatch[4];
+                setSubjectCode(realSub);
+                setUnitCode(realU);
+                setLessonCode(realL);
+                setClassroomId(realCId);
+              }
+            }
             const parsed = raw.stage && Array.isArray(raw.scenes) ? (raw as ClassroomData) : await loadUniversalFromJson(JSON.stringify(raw));
-            await setupClassroomData(parsed, subject, unit, lesson, classId, zipUrl || undefined);
+            await setupClassroomData(parsed, realSub, realU, realL, realCId, zipUrl || undefined);
             return;
           }
         }
@@ -908,6 +999,8 @@ export function ClassroomPlayerPage() {
       const file = files[0];
       if (file.name.endsWith('.zip') || file.name.endsWith('.maic.zip')) {
         handleZipFile(file);
+      } else if (file.name.endsWith('.json')) {
+        handleJsonFile(file);
       }
     }
   };

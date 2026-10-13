@@ -60,32 +60,43 @@ async function fetchCoursesJson(env: Env, key: string): Promise<any | null> {
 }
 
 /**
- * Normalizes a scene media URL to the live OpenMAIC media host over HTTPS.
- * The courses bucket is now private, so scene images/videos must be served
- * directly from the still-public open.maic.chat media CDN.
+ * Normalizes any classroom media asset (image / video).
+ * - If external (http/https): keep it (upgrade http to https).
+ * - If local in-memory (data: / blob:): keep it.
+ * - If indicates local relative path: normalize to /classroom-media/${classroomId}/media/${filename}.
  */
 function normalizeMediaSrc(src: string | undefined, classroomId: string): string | undefined {
   if (!src) return src;
-  if (src.startsWith('data:') || src.startsWith('blob:')) return src;
-  if (/^https:\/\//i.test(src)) return src;
-  if (/^http:\/\//i.test(src)) return src.replace(/^http:/, 'https:');
-  const clean = src.replace(/^\/+/, '');
+  const trimmed = src.trim();
+  if (trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return trimmed;
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('//')) {
+    return trimmed.replace(/^http:\/\//i, 'https://');
+  }
+  const clean = trimmed.split('?')[0].replace(/^\/+/, '');
   const name = clean.split('/').pop() || clean;
   const hasExt = /\.[a-zA-Z0-9]{2,5}$/.test(name);
   const filename = hasExt ? name : `${name}.jpeg`;
-  return `https://open.maic.chat/api/classroom-media/${classroomId}/media/${filename}`;
+  return `/classroom-media/${classroomId}/media/${filename}`;
 }
 
-function normalizeClassroomAudio(data: any, subject: string, unit: string, lesson: string, classroomId: string): any {
+/**
+ * Normalizes classroom assets (speech audio, canvas images/videos, action visuals).
+ * - If audio or media is linked to external src (http/https): keeps it.
+ * - If in-memory local object (data: / blob:): keeps it.
+ * - When it indicates a local/relative path: normalizes to related bucket asset path.
+ */
+function normalizeClassroomAssets(data: any, subject: string, unit: string, lesson: string, classroomId: string): any {
   if (!data || typeof data !== 'object') return data;
   const clone = JSON.parse(JSON.stringify(data));
   const u = cleanUnitCode(unit);
   const l = cleanLessonCode(lesson);
-  const cId = classroomId || clone.id || 'classroom';
+  const cId = classroomId || clone.id || clone.stage?.id || 'classroom';
   const baseTts = `/api/courses/classrooms/${subject}/${u}/${l}/${cId}/tts`;
+  const baseAudio = `/api/courses/classrooms/${subject}/${u}/${l}/${cId}/audio`;
 
   if (Array.isArray(clone.scenes)) {
     clone.scenes.forEach((sc: any, scIdx: number) => {
+      // 1. Normalize canvas images & videos
       const canvasElements = sc?.content?.canvas?.elements;
       if (Array.isArray(canvasElements)) {
         canvasElements.forEach((el: any) => {
@@ -94,14 +105,50 @@ function normalizeClassroomAudio(data: any, subject: string, unit: string, lesso
           }
         });
       }
+
+      // 2. Normalize actions (visuals, speech audio)
       if (Array.isArray(sc.actions)) {
         let speechIdx = 0;
         sc.actions.forEach((act: any) => {
-          if (act.type === 'speech' || act.type === 'speak' || act.audio || act.audioUrl) {
-            const padScene = String(scIdx).padStart(2, '0');
-            const padSpeech = String(speechIdx).padStart(2, '0');
-            const audioName = `scene_${padScene}_speech_${padSpeech}.mp3`;
-            act.audioUrl = `${baseTts}/${audioName}`;
+          if (act.visualUrl) {
+            act.visualUrl = normalizeMediaSrc(act.visualUrl, cId);
+          }
+
+          if (act.type === 'speech' || act.type === 'speak' || act.audio || act.audioUrl || act.url) {
+            const rawAudio = act.audioUrl || act.url || act.audioRef;
+
+            if (rawAudio && typeof rawAudio === 'string' && (rawAudio.startsWith('blob:') || rawAudio.startsWith('data:'))) {
+              // Local in-memory blob or data URL: keep as is
+              act.audioUrl = rawAudio;
+              act.url = rawAudio;
+            } else if (rawAudio && typeof rawAudio === 'string' && (/^https?:\/\//i.test(rawAudio) || rawAudio.startsWith('//'))) {
+              // External src: keep external source, ensuring https protocol
+              act.audioUrl = rawAudio.replace(/^http:\/\//i, 'https://');
+              act.url = act.audioUrl;
+            } else {
+              // Indicates local / relative path (e.g. audio/... or filename or audioId): normalize to bucket path
+              let audioFilename = '';
+              if (rawAudio && typeof rawAudio === 'string') {
+                const clean = rawAudio.split('?')[0].trim();
+                const name = clean.split('/').pop();
+                if (name) {
+                  audioFilename = name.endsWith('.mp3') || name.endsWith('.wav') ? name : `${name}.mp3`;
+                }
+              } else if (act.audioId && typeof act.audioId === 'string') {
+                const cleanId = act.audioId.trim();
+                audioFilename = cleanId.endsWith('.mp3') || cleanId.endsWith('.wav') ? cleanId : `${cleanId}.mp3`;
+              }
+
+              if (audioFilename) {
+                act.audioUrl = `${baseAudio}/${audioFilename}`;
+              } else {
+                const padScene = String(scIdx).padStart(2, '0');
+                const padSpeech = String(speechIdx).padStart(2, '0');
+                const audioName = `scene_${padScene}_speech_${padSpeech}.mp3`;
+                act.audioUrl = `${baseTts}/${audioName}`;
+              }
+              act.url = act.audioUrl;
+            }
             speechIdx++;
           }
         });
@@ -155,7 +202,13 @@ export const onRequest: PagesFunction<Env> = async (context) => {
   for (const key of candidateKeys) {
     const data = await fetchCoursesJson(env, key);
     if (data) {
-      const normalized = normalizeClassroomAudio(data, subject, unit, lesson, classroomId);
+      const keyMatch = key.match(/^classrooms\/([^/]+)\/(u\d+)\/(l\d+)\/([^/]+)/i);
+      const actualSubject = keyMatch?.[1] || subject;
+      const actualUnit = keyMatch?.[2] || unit;
+      const actualLesson = keyMatch?.[3] || lesson;
+      const actualId = keyMatch?.[4] || classroomId;
+
+      const normalized = normalizeClassroomAssets(data, actualSubject, actualUnit, actualLesson, actualId);
       return new Response(JSON.stringify({ status: 'ok', key, data: normalized }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
