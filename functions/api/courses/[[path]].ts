@@ -48,39 +48,71 @@ function decodeSafeKey(encodedKey: string): string | null {
   return clean;
 }
 
-function getRangeOptions(rangeHeader: string | null): R2GetOptions {
-  const options: R2GetOptions = {};
-  if (!rangeHeader) return options;
-
-  const match = rangeHeader.match(/^bytes=(\d+)-(\d*)$/);
-  if (!match) return options;
-  const offset = Number(match[1]);
-  const end = match[2] ? Number(match[2]) : undefined;
-  if (!Number.isSafeInteger(offset) || (end !== undefined && !Number.isSafeInteger(end)) || (end !== undefined && end < offset)) {
-    return options;
-  }
-  options.range = { offset, length: end === undefined ? undefined : end - offset + 1 };
-  return options;
+interface ParsedByteRange {
+  offset: number;
+  length: number;
+  end: number;
 }
 
-function objectResponse(request: Request, object: R2ObjectBody, mime: string): Response {
+function parseRangeHeader(rangeHeader: string | null, totalSize: number): ParsedByteRange | null {
+  if (!rangeHeader || !/^bytes=/i.test(rangeHeader)) return null;
+
+  const match = rangeHeader.match(/^bytes=(\d+)-(\d*)$/i);
+  if (match) {
+    const offset = parseInt(match[1], 10);
+    const rawEnd = match[2] ? parseInt(match[2], 10) : undefined;
+    const end = rawEnd !== undefined && !isNaN(rawEnd) ? Math.min(rawEnd, totalSize - 1) : totalSize - 1;
+    if (!isNaN(offset) && offset >= 0 && offset <= end && offset < totalSize) {
+      return { offset, length: end - offset + 1, end };
+    }
+    return null;
+  }
+
+  const suffixMatch = rangeHeader.match(/^bytes=-(\d+)$/i);
+  if (suffixMatch) {
+    const suffix = parseInt(suffixMatch[1], 10);
+    if (!isNaN(suffix) && suffix > 0) {
+      const offset = Math.max(0, totalSize - suffix);
+      const end = totalSize - 1;
+      return { offset, length: end - offset + 1, end };
+    }
+  }
+
+  return null;
+}
+
+function objectResponse(request: Request, object: R2ObjectBody, mime: string, totalSize?: number): Response {
   const headers = new Headers();
   headers.set('Content-Type', mime);
   headers.set('Accept-Ranges', 'bytes');
   headers.set('Cache-Control', 'private, max-age=3600');
   if (object.httpEtag) headers.set('ETag', object.httpEtag);
 
-  if ('range' in object && object.range) {
-    const rangeStart = 'suffix' in object.range
-      ? Math.max(0, object.size - object.range.suffix)
-      : (object.range.offset ?? 0);
-    headers.set('Content-Range', `bytes ${rangeStart}-${rangeStart + object.size - 1}/${rangeStart + object.size}`);
+  const rangeHeader = request.headers.get('Range');
+  const fullSize = typeof totalSize === 'number' && !isNaN(totalSize) ? totalSize : object.size;
+
+  // 1. If no Range requested, return standard 200 OK (never 206)
+  if (!rangeHeader || !/^bytes=/i.test(rangeHeader)) {
     headers.set('Content-Length', String(object.size));
-    return new Response(request.method === 'HEAD' ? null : object.body, { status: 206, headers });
+    return new Response(request.method === 'HEAD' ? null : object.body, { status: 200, headers });
   }
 
+  // 2. Parse range header
+  const parsed = parseRangeHeader(rangeHeader, fullSize);
+  if (!parsed) {
+    const offsetMatch = rangeHeader.match(/^bytes=(\d+)-/i);
+    if (offsetMatch && parseInt(offsetMatch[1], 10) >= fullSize) {
+      headers.set('Content-Range', `bytes */${fullSize}`);
+      return new Response(null, { status: 416, headers });
+    }
+    headers.set('Content-Length', String(object.size));
+    return new Response(request.method === 'HEAD' ? null : object.body, { status: 200, headers });
+  }
+
+  // 3. Return RFC-compliant 206 Partial Content
+  headers.set('Content-Range', `bytes ${parsed.offset}-${parsed.end}/${fullSize}`);
   headers.set('Content-Length', String(object.size));
-  return new Response(request.method === 'HEAD' ? null : object.body, { status: 200, headers });
+  return new Response(request.method === 'HEAD' ? null : object.body, { status: 206, headers });
 }
 
 function isEnabled(value?: string): boolean {
@@ -153,6 +185,46 @@ async function fetchLegacyPublicAudio(cleanKey: string, request: Request, env?: 
   }
 }
 
+async function getBucketObject(
+  bucket: R2Bucket,
+  key: string,
+  request: Request,
+  mime: string
+): Promise<Response | null> {
+  const rangeHeader = request.headers.get('Range');
+  try {
+    if (!rangeHeader || !/^bytes=/i.test(rangeHeader)) {
+      const obj = await bucket.get(key);
+      if (!obj) return null;
+      if (mime.startsWith('audio/') && obj.size < 64) return null;
+      return objectResponse(request, obj, mime, obj.size);
+    }
+
+    const head = await bucket.head(key);
+    if (!head) return null;
+    if (mime.startsWith('audio/') && head.size < 64) return null;
+
+    const parsed = parseRangeHeader(rangeHeader, head.size);
+    if (!parsed) {
+      const offsetMatch = rangeHeader.match(/^bytes=(\d+)-/i);
+      if (offsetMatch && parseInt(offsetMatch[1], 10) >= head.size) {
+        const headers = new Headers();
+        headers.set('Content-Range', `bytes */${head.size}`);
+        return new Response(null, { status: 416, headers });
+      }
+      const obj = await bucket.get(key);
+      if (!obj) return null;
+      return objectResponse(request, obj, mime, head.size);
+    }
+
+    const obj = await bucket.get(key, { range: { offset: parsed.offset, length: parsed.length } });
+    if (!obj) return null;
+    return objectResponse(request, obj, mime, head.size);
+  } catch (_e) {
+    return null;
+  }
+}
+
 export const onRequest: PagesFunction<Env> = async (context) => {
   const { request, env, params } = context;
 
@@ -172,35 +244,26 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
   const mime = getMimeType(cleanKey);
   const rangeHeader = request.headers.get('Range');
-  const getOptions = getRangeOptions(rangeHeader);
 
   if (env.COURSES) {
-    try {
-      const object = await env.COURSES.get(cleanKey, getOptions);
-      if (object) return objectResponse(request, object, mime);
+    const res = await getBucketObject(env.COURSES, cleanKey, request, mime);
+    if (res) return res;
 
-      // Check alternate audio format (.mp3 <-> .wav)
-      if (cleanKey.endsWith('.mp3')) {
-        const altKey = cleanKey.replace(/\.mp3$/i, '.wav');
-        const altObj = await env.COURSES.get(altKey, getOptions);
-        if (altObj) return objectResponse(request, altObj, 'audio/wav');
-      } else if (cleanKey.endsWith('.wav')) {
-        const altKey = cleanKey.replace(/\.wav$/i, '.mp3');
-        const altObj = await env.COURSES.get(altKey, getOptions);
-        if (altObj) return objectResponse(request, altObj, 'audio/mpeg');
-      }
-    } catch (_error) {
-      // Try the legacy classroom binding and optional diagnostic fallback.
+    // Check alternate audio format (.mp3 <-> .wav)
+    if (cleanKey.endsWith('.mp3')) {
+      const altKey = cleanKey.replace(/\.mp3$/i, '.wav');
+      const altRes = await getBucketObject(env.COURSES, altKey, request, 'audio/wav');
+      if (altRes) return altRes;
+    } else if (cleanKey.endsWith('.wav')) {
+      const altKey = cleanKey.replace(/\.wav$/i, '.mp3');
+      const altRes = await getBucketObject(env.COURSES, altKey, request, 'audio/mpeg');
+      if (altRes) return altRes;
     }
   }
 
   if (env.HARBY && cleanKey.startsWith('classrooms/')) {
-    try {
-      const object = await env.HARBY.get(cleanKey, getOptions);
-      if (object) return objectResponse(request, object, mime);
-    } catch (_error) {
-      // Continue to the not-found response below.
-    }
+    const res = await getBucketObject(env.HARBY, cleanKey, request, mime);
+    if (res) return res;
   }
 
   if (isEnabled(env.ALLOW_PUBLIC_R2_FALLBACK)) {
