@@ -276,7 +276,14 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const zip = await JSZip.loadAsync(zipBuffer);
+      let zip;
+      try {
+        zip = await JSZip.loadAsync(zipBuffer);
+      } catch (_zipErr) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid or missing ZIP archive' }));
+        return;
+      }
 
       if (pathname.includes('/media') || fileParam) {
         const cleanName = fileParam.replace(/^\/+/, '');
