@@ -1,232 +1,403 @@
-# Cloudflare Pages API Guide
+# Cloudflare Pages CourseViewer API Guide
 
-This manual explains how to interact with the backend endpoints of the CourseViewer platform from any client application (e.g., a React frontend, mobile app, or another server). 
-
-The base URL for these endpoints is your production domain (e.g., `https://courseviewer.lms-yemen.com`).
+Complete technical reference and operational manual for consuming, embedding, extending, and updating backend endpoints and client storage on the CourseViewer platform (`courseviewer.lms-yemen.com`).
 
 ---
 
-## Authentication and storage defaults
+## 1. Architectural Overview & Base URLs
 
-When `JWT_SECRET` is configured on the Pages deployment, all classroom, HTML lesson, course-proxy, ZIP, and custom-voice endpoints require a valid signed HS256 JWT. Printed pages, public page images, thumbnails, the catalog, and health discovery remain public. A token may be supplied through an `Authorization: Bearer <token>` header, the `?token=<token>` query parameter used by iframe/audio embeds, or a `jwt_token` cookie.
+CourseViewer runs as a globally distributed **Cloudflare Pages** application powered by **Cloudflare Pages Functions** (V8 runtime at the edge) and backed by **Cloudflare R2** private object storage.
 
-The token payload may include `role: "teacher"` or `role: "admin"` for unrestricted access, or `allowedCourses: ["adb10p1", "bio10p1"]` to restrict access by subject. Configure `ALLOW_PUBLIC_R2_FALLBACK=false` in production; public R2 fallback is available only as an explicit migration diagnostic option.
+- **Production Domain:** `https://courseviewer.lms-yemen.com`
+- **Cloudflare Pages Edge Domain:** `https://courseviewer-cf-pages.pages.dev`
+- **Local Preview Server:** `http://localhost:8788` (or `http://127.0.0.1:8788`)
+- **Vite Dev Server:** `http://localhost:5173`
 
-```bash
-curl -H "Authorization: Bearer $COURSEVIEWER_JWT" \
-  "https://courseviewer.lms-yemen.com/api/classroom-data?subject=adb10p1&unit=u1&lesson=l1&id=1v_nRmh_wh"
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        Consumers & Embedding                           │
+│  • LMS-Yemen (Iframe embedding on https://lms-yemen.com)              │
+│  • Mobile WebView & Capacitor / Cordova Apps                          │
+│  • Browser Client with Local Offline Storage (IndexedDB + Cache)       │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │ HTTPS (CORS + CSP frame-ancestors)
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                      Cloudflare Pages Edge Router                      │
+│                  (functions/_middleware.ts: Auth & CORS)               │
+├──────────────────┬──────────────────┬─────────────────┬────────────────┤
+│  /api/health     │  /api/classroom- │  /api/courses/* │ /api/custom-   │
+│  (Diagnostics)   │   data           │  /api/classroom-│  voice         │
+│                  │  (DSL Manifest)  │   zip/* (ZIP)   │ (TTS Studio)   │
+├──────────────────┴──────────────────┼─────────────────┴────────────────┤
+│  /printed-pages (Book Reader)       │  /pages/* (900px WebP Proxy)     │
+│  /classroom (Interactive Player)    │  /classroom-media/*              │
+└────────┬────────────────────────────┴────────┬─────────────────────────┘
+         │                                     │
+         ▼                                     ▼
+┌──────────────────┐               ┌─────────────────────────────────────┐
+│ Cloudflare Pages │               │     Cloudflare R2 Object Storage    │
+│ Functions Engine │               │ • COURSES: Classrooms & Manifests   │
+│ (Worker V8 Edge) │               │ • HARBY: Custom audio overrides     │
+└──────────────────┘               └─────────────────────────────────────┘
 ```
 
-If `REQUIRE_AUTH=true` is set without `JWT_SECRET`, protected requests fail closed with `AUTH_NOT_CONFIGURED` rather than falling back to anonymous access.
+---
+
+## 2. Authentication, CORS & Iframe Security
+
+### 2.1 JWT Authentication (Option A Policy)
+When `JWT_SECRET` is configured in Cloudflare Pages environment secrets, protected endpoints (`/api/classroom-data`, `/api/courses/*`, `/api/classroom-zip/*`, `/api/custom-voice`) require a signed HS256 JWT.
+
+A token may be supplied via:
+1. `Authorization: Bearer <token>` header (standard API clients).
+2. Query parameter: `?token=<token>` (useful for `<audio>`, `<video>`, and `<iframe>` embeds).
+3. Cookie: `jwt_token=<token>`.
+
+#### Token Payload Claims:
+```json
+{
+  "sub": "user_12345",
+  "role": "teacher",
+  "allowedCourses": ["adb10p1", "bio10p1"],
+  "exp": 1795000000
+}
+```
+*Note: Public endpoints like `/api/health`, `/pages/*` (textbook page images), and static UI assets remain accessible without authentication.*
+
+### 2.2 LMS-Yemen Iframe Embedding & CSP Rules
+- **NEVER use `X-Frame-Options: SAMEORIGIN`**: Because `courseviewer.lms-yemen.com` and `lms-yemen.com` are different hostnames, `SAMEORIGIN` prevents browsers from embedding the viewer inside the LMS.
+- **Content-Security-Policy**: Configured in `functions/_middleware.ts` and `public/_headers`:
+  ```http
+  Content-Security-Policy: frame-ancestors 'self' https://lms-yemen.com https://*.lms-yemen.com http://localhost:* http://127.0.0.1:*
+  ```
+- **CORS Allowed Origins**: Allows `https://lms-yemen.com`, subdomains (`*.lms-yemen.com`), and local development ports (`http://localhost:*`, `http://127.0.0.1:*`).
 
 ---
 
-## 1. Pages Health & Deployment Discovery
-**Endpoint:** `/api/health`
-**Methods:** `GET`, `HEAD`
+## 3. Complete Endpoints Reference ("How to Use")
 
-This public endpoint verifies that the Pages runtime is responding and reports non-sensitive deployment diagnostics. It does not expose JWT secrets, bucket names, object keys, or user data.
+### 3.1 GET `/api/health`
+Health probe and non-sensitive deployment discovery.
 
+- **Methods:** `GET`, `HEAD`
+- **Auth:** Public
+- **Cache:** `Cache-Control: no-store`
+
+#### Example Request:
 ```bash
 curl "https://courseviewer.lms-yemen.com/api/health"
 ```
 
-The response includes the service version, timestamp, whether authentication is configured and required, and whether the expected R2 bindings are available. The response is marked `Cache-Control: no-store` so monitoring systems observe the current runtime state.
-
----
-
-## 2. Classroom Data Resolver
-**Endpoint:** `/api/classroom-data`  
-**Methods:** `GET`, `POST`
-
-This endpoint fetches and normalizes the core classroom JSON (`classdata.json`) for a specific lesson, automatically updating relative media paths to absolute streaming URLs (via the R2 proxy).
-
-### Request Parameters (Query String or JSON Body)
-*   `subject` (e.g., `adb10p1`)
-*   `unit` (e.g., `u1`)
-*   `lesson` (e.g., `l1`)
-*   `id` or `classroomId` (e.g., `1v_nRmh_wh`)
-
-### Example `GET` Request
-```bash
-curl "https://courseviewer.lms-yemen.com/api/classroom-data?subject=adb10p1&unit=u1&lesson=l1&id=1v_nRmh_wh"
-```
-
-### Example Response
+#### Response `200 OK`:
 ```json
 {
   "status": "ok",
-  "key": "classrooms/adb10p1/u1/l1/1v_nRmh_wh/classdata.json",
-  "data": {
-    "id": "1v_nRmh_wh",
-    "stage": {
-      "name": "الأدب في العصر الجاهلي"
-    },
-    "scenes": [ ... ] // Audio paths here will point to /api/courses/...
+  "service": "courseviewer-pages",
+  "version": "2.1.0",
+  "timestamp": "2026-11-24T20:21:49.236Z",
+  "auth": {
+    "configured": false,
+    "required": false
+  },
+  "storage": {
+    "coursesBinding": true,
+    "harbyBinding": true
   }
 }
 ```
 
 ---
 
-## 3. Secure Media Proxy (R2)
-**Endpoint:** `/api/courses/*`  
-**Methods:** `GET`, `HEAD`
+### 3.2 GET `/api/classroom-data`
+Fetches and normalizes the interactive classroom JSON manifest (`classdata.json`) for a specific lesson, rewriting relative audio/media paths to absolute streaming URLs.
 
-This endpoint acts as a secure, range-aware proxy for files stored in the private R2 bucket. It's automatically used by the Classroom Data Resolver to serve MP3s, images, and other assets.
+- **Methods:** `GET`, `POST`
+- **Auth:** Optional / JWT (enforced when `REQUIRE_AUTH=true`)
 
-### Usage
-Simply append the R2 bucket object key to the endpoint.
+#### Query Parameters:
+| Parameter | Type | Required | Default | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `subject` | string | Recommended | `adb10p1` | Subject code (e.g. `adb10p1`, `bio10p1`, `chm11p1`, `math10p1`). |
+| `unit` | string | Recommended | `u1` | Unit code (auto-normalized: `1` -> `u1`, `u01` -> `u1`). |
+| `lesson` | string | Recommended | `l1` | Lesson code (auto-normalized: `1` -> `l1`, `l01` -> `l1`). |
+| `id` / `classroomId` | string | Yes | — | Unique classroom ID (e.g. `1v_nRmh_wh`). |
+| `zip` / `zipUrl` | string | Optional | — | Explicit `.maic.zip` archive key in R2. |
 
-### Example Request
+#### Example Request:
 ```bash
-# Streaming a scene's TTS audio file:
-curl -I "https://courseviewer.lms-yemen.com/api/courses/classrooms/adb10p1/u1/l1/1v_nRmh_wh/tts/scene_00_speech_00.mp3"
+curl "https://courseviewer.lms-yemen.com/api/classroom-data?subject=adb10p1&unit=u1&lesson=l1&id=1v_nRmh_wh"
 ```
-*Note: This endpoint supports HTTP `206 Partial Content` (Range requests), making it ideal for `<audio>` and `<video>` tags in web apps.*
+
+#### Response `200 OK`:
+```json
+{
+  "status": "ok",
+  "key": "classrooms/adb10p1/u1/l1/1v_nRmh_wh/classdata.json",
+  "data": {
+    "id": "1v_nRmh_wh",
+    "version": "2.0",
+    "stage": {
+      "name": "الأدب في العصر الجاهلي",
+      "width": 1280,
+      "height": 720
+    },
+    "scenes": [
+      {
+        "id": "scene_0",
+        "title": "مقدمة العصر الجاهلي",
+        "content": { "canvas": { "elements": [] } },
+        "actions": [
+          {
+            "type": "speech",
+            "speaker": "المعلم",
+            "text": "مرحباً بكم يا أبنائي في درسنا الأول...",
+            "audioUrl": "/api/courses/classrooms/adb10p1/u1/l1/1v_nRmh_wh/audio/speech_0.mp3"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
 
 ---
 
-## 4. ZIP File Streamer
-**Endpoint:** `/api/classroom-zip/*`  
-**Methods:** `GET`
+### 3.3 GET `/api/courses/*`
+Secure, range-aware proxy for files stored in the private `COURSES` R2 bucket.
 
-This powerful utility extracts specific files from an archived `.zip` classroom *on-the-fly* without downloading the entire ZIP file.
+- **Methods:** `GET`, `HEAD`
+- **Features:** Supports HTTP `206 Partial Content` (`Range` header) for fast seeking in audio (`.mp3`, `.wav`) and video assets.
+- **Cache:** `Cache-Control: public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400`
 
-### A. Fetching the Classroom JSON from a ZIP
-**Path:** `/api/classroom-zip/data`  
-Extracts the manifest/classroom data and rewrites media URLs to point back to the ZIP streaming endpoint.
-
+#### Example Request:
 ```bash
-curl "https://courseviewer.lms-yemen.com/api/classroom-zip/data?zip=/samples/test-classroom.zip"
-```
-
-### B. Streaming Media from inside the ZIP
-**Path:** `/api/classroom-zip/media`  
-Fetches a specific file (e.g., an MP3 or image) from inside the ZIP.
-
-```bash
-curl "https://courseviewer.lms-yemen.com/api/classroom-zip/media?zip=/samples/test-classroom.zip&file=media/scene_01.mp3"
+curl -I -H "Range: bytes=0-1024" \
+  "https://courseviewer.lms-yemen.com/api/courses/classrooms/adb10p1/u1/l1/1v_nRmh_wh/audio/speech_0.mp3"
 ```
 
 ---
 
-## 5. Custom Voice & TTS Studio
-**Endpoint:** `/api/custom-voice`  
-**Methods:** `GET`, `POST`  
-**CORS:** Enabled (`*`)
+### 3.4 GET `/api/classroom-zip/*`
+Progressive on-demand streamer that extracts files from `.maic.zip` archives without downloading the whole ZIP archive to the client.
 
-This endpoint handles custom voice interactions, including uploading custom audio overrides, fetching voice profiles, and previewing TTS.
+#### A. Fetch Classroom Manifest from ZIP:
+```bash
+curl "https://courseviewer.lms-yemen.com/api/classroom-zip/data?zip=samples/classroom.zip"
+```
 
-### A. Fetch Voice Profiles (`GET`)
-Retrieves the list of available TTS voices.
+#### B. Stream Individual Asset from ZIP:
+```bash
+curl "https://courseviewer.lms-yemen.com/api/classroom-zip/media?zip=samples/classroom.zip&file=media/scene_01.mp3"
+```
+
+---
+
+### 3.5 GET `/pages/*`
+Textbook page image proxy with CORS headers.
+
+- **URL Pattern:** `/pages/{subject}/pages/page-{N}-w900.webp`
+- **Standard Width Policy:** Standardized strictly to `w900` (`900px WebP`). Non-900px sizes are excluded to optimize bandwidth and client storage.
+- **Target Backend:** `https://pub-82c5ce36837a4c7e8093a3bb8ff74057.r2.dev/`
+
+#### Example Request:
+```bash
+curl -I "https://courseviewer.lms-yemen.com/pages/adb10p1/pages/page-1-w900.webp"
+```
+
+---
+
+### 3.6 GET & POST `/api/custom-voice`
+TTS Voice Studio API for listing voice profiles, previewing synthesized speech, and uploading custom voice audio overrides.
+
+#### A. List Voice Profiles (`GET`):
 ```bash
 curl "https://courseviewer.lms-yemen.com/api/custom-voice"
 ```
+Returns available Azure/ElevenLabs/Gemini neural voices and custom profile IDs.
 
-### B. Execute Studio Actions (`POST`)
-Accepts either `application/json` or `multipart/form-data`. 
-
-**Common Payload Fields:**
-*   `action`: The action to perform (`upload_audio`, `customize_voice`, `preview_speech`).
-*   `subject`, `unit`, `lesson`, `classroomId`: The target classroom.
-*   `sceneIndex`, `speechIndex`: The target scene and speech block.
-
-#### Action: `upload_audio`
-Uploads a base64-encoded audio file to override a specific speech block.
-```json
-{
-  "action": "upload_audio",
-  "subject": "adb10p1",
-  "unit": "u1",
-  "lesson": "l1",
-  "classroomId": "1v_nRmh_wh",
-  "sceneIndex": 0,
-  "speechIndex": 0,
-  "audioBase64": "data:audio/mp3;base64,//NExAAAAANIAAAAAExB..."
-}
-```
-
-#### Action: `customize_voice`
-Sets TTS parameters for a specific request.
-```json
-{
-  "action": "customize_voice",
-  "voiceProfileId": "ar-sa-naif",
-  "speed": 1.2,
-  "pitch": 1.0,
-  "subject": "adb10p1",
-  "unit": "u1",
-  "lesson": "l1",
-  "classroomId": "1v_nRmh_wh"
-}
-```
-
-#### Action: `preview_speech`
-Simulates generating a TTS preview for arbitrary text.
-```json
-{
-  "action": "preview_speech",
-  "voiceProfileId": "ar-eg-salma",
-  "text": "مرحباً بك في الدرس الأول",
-  "speed": 1.0,
-  "pitch": 1.0
-}
-```
-
----
-
-## 6. Interactive HTML Lesson Viewer
-**Endpoint:** `/html` (query-param route)
-**Methods:** `GET`
-
-The React viewer resolves the supplied lesson file through the private courses proxy and renders the lesson in an iframe. It tries an explicit `file` first, then the repository’s standard subject/folder naming conventions.
-
+#### B. Upload Custom Audio Override (`POST`):
 ```bash
-# The token may also be supplied through an Authorization header in a normal API client.
-open "https://courseviewer.lms-yemen.com/html?subject=hadith11&unit=u1&lesson=l1&file=hadith11/hadith11_u1l1.html&token=$COURSEVIEWER_JWT"
+curl -X POST "https://courseviewer.lms-yemen.com/api/custom-voice" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action": "customize_voice",
+    "subject": "adb10p1",
+    "unit": "u1",
+    "lesson": "l1",
+    "classroomId": "1v_nRmh_wh",
+    "sceneIndex": 0,
+    "speechIndex": 0,
+    "audioBase64": "data:audio/mp3;base64,//NExAAAAANIA...",
+    "voiceProfileId": "ar-sa-naif"
+  }'
 ```
-
-The iframe source is kept same-origin so its relative CSS, JavaScript, image, and audio references continue to resolve through the protected proxy. Use the viewer toolbar to retry resolution or open the resolved lesson in a separate tab.
 
 ---
 
-## 7. Printed Book Pages Reader
-**Endpoint:** `/printed-pages` (or `/api/printed-pages`)  
-**Methods:** `GET`
+### 3.7 GET `/classroom`
+Standalone interactive classroom player page.
 
-This endpoint serves the HTML viewer for the printed textbook pages. It dynamically loads the page images for a specified subject, unit, lesson, and page range. It is ideal for embedding the book reader into another application via an `iframe`.
+- **URL:** `https://courseviewer.lms-yemen.com/classroom?subject=adb10p1&unit=u1&lesson=l1&id=1v_nRmh_wh`
+- **Offline Support:** Automatically checks `IndexedDB` and `CacheStorage` before making network calls. If downloaded, loads instantly with zero network requests.
+- **Embedded Download Manager:** Floating download trigger button allows downloading classroom data and textbook pages directly to the device.
 
-### Request Parameters (Query String)
-*   `subject` (e.g., `adb10p1` or `bio10p1`)
-*   `unit` (e.g., `u1`)
-*   `lesson` (e.g., `l1`)
-*   `start` (Starting page number, e.g., `11`)
-*   `end` (Ending page number, e.g., `15`)
-*   `total` (Alternative to start/end: specifies total pages to load, e.g., `5`)
+---
 
-### Example `GET` Request
+### 3.8 GET `/printed-pages` (or `/lesson/...`)
+Seamless textbook book reader for printed pages.
+
+- **URL:** `https://courseviewer.lms-yemen.com/printed-pages?subject=adb10p1&unit=u1&lesson=l1&start=1&end=15`
+- **Query Parameters:**
+  - `subject`: Course subject code (e.g. `adb10p1`).
+  - `unit`: Unit code (e.g. `u1`).
+  - `lesson`: Lesson code (e.g. `l1`).
+  - `start`: First page number in range.
+  - `end`: Last page number in range.
+  - `total`: Total page count.
+- **Touch & Mobile Gestures:**
+  - Horizontal swipe left/right for page flipping on touchscreens.
+  - 3-second auto-hiding navigation bar on mobile viewports (< 768px).
+
+---
+
+## 4. Client-Side Offline Storage & Download Manager
+
+The CourseViewer client features an offline storage engine that enables offline playback in web browsers and mobile WebViews.
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        Local Storage Engine                            │
+├───────────────────────────────────┬────────────────────────────────────┤
+│           IndexedDB               │            CacheStorage            │
+│    (CourseViewerLocalDB v1)       │     (courseviewer-media-v1)        │
+├───────────────────────────────────┼────────────────────────────────────┤
+│ • lessons (Manifests & metadata)  │ • Scene TTS Audio Blobs (.mp3)     │
+│ • units (Aggregated units)        │ • Visual Media (Images, Diagrams)  │
+│ • download_queue (Task states)    │ • 900px WebP Printed Pages         │
+└───────────────────────────────────┴────────────────────────────────────┘
+```
+
+### 4.1 Selective Download Options
+The Download Manager modal allows users to select which components to download (both checked by default):
+1. **`[✓] الغرفة الصفية التفاعلية (Classroom DSL + Audio TTS)`**: Downloads classroom scene manifests and audio files.
+2. **`[✓] صفحات الكتاب المطبوع بدقة 900px WebP (Textbook 900px Pages)`**: Downloads page images strictly at 900px WebP (`page-{N}-w900.webp`).
+
+### 4.2 Programmatic Usage (`useDownloadManager` Hook)
+```typescript
+import { useDownloadManager } from '@/hooks/useDownloadManager';
+
+function MyComponent() {
+  const { downloadLessonWithOptions, deleteLesson, deletePagesOnly } = useDownloadManager();
+
+  const handleDownload = async () => {
+    await downloadLessonWithOptions(
+      'adb10p1',    // subject
+      'u1',         // unit
+      'l1',         // lesson
+      '1v_nRmh_wh', // classroomId
+      undefined,    // optional zipUrl
+      {
+        includeClassroom: true, // Cache DSL + audio
+        includePages: true,     // Cache 900px WebP textbook pages
+        startPage: 1,
+        pageCount: 15,
+      }
+    );
+  };
+}
+```
+
+---
+
+## 5. How to Update or Extend the API (Developer Guide)
+
+Follow this step-by-step workflow when adding or modifying backend API routes.
+
+### Step 1: Add or Edit the Route in `functions/api/`
+Cloudflare Pages uses file-based routing:
+- `functions/api/new-endpoint.ts` -> `/api/new-endpoint`
+- `functions/api/nested/[[path]].ts` -> `/api/nested/*`
+
+```typescript
+import { authorizeRequest, type AuthEnv } from '../lib/auth';
+
+interface Env extends AuthEnv {
+  COURSES?: R2Bucket;
+  HARBY?: R2Bucket;
+}
+
+export const onRequest: PagesFunction<Env> = async (context) => {
+  const { request, env } = context;
+
+  // Handle CORS Preflight
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      },
+    });
+  }
+
+  // Authorize Request
+  const auth = await authorizeRequest(request, env);
+  if (auth.response) return auth.response;
+
+  // Execute Logic
+  return new Response(JSON.stringify({ status: 'ok' }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+  });
+};
+```
+
+### Step 2: Update Local Preview Server (`serve_preview.mjs`)
+Ensure `serve_preview.mjs` handles the new route so local tests and automated verification suites run with 100% parity before deployment.
+
+### Step 3: Run Verification Gates
+Always run the complete test suite before deploying:
 ```bash
-# Get the printed pages HTML for Adab Grade 10, Pages 11-15:
-curl "https://courseviewer.lms-yemen.com/printed-pages?subject=adb10p1&unit=u1&lesson=l1&start=11&end=15"
+# 1. Typecheck functions and frontend
+npm run typecheck:functions
+npm run typecheck
+
+# 2. Run unit and offline storage tests
+node test_local_storage_db.mjs
+node test_offline_printed_pages.mjs
+
+# 3. Run live API and Playwright E2E tests
+node test_multiple_classrooms.mjs
+node test_pre_deployment_ui.mjs
 ```
+
+### Step 4: Deploy to Production
+Per [AGENTS.md](file:///D:/projects/cloudflarepages/AGENTS.md):
+- **The production environment is locked to branch `master`.**
+- Pushing to `main` creates Preview deployments only.
+- To deploy production:
+  ```bash
+  git checkout master
+  git merge main
+  git push origin master
+  git checkout main
+  ```
+- Or direct CLI deployment:
+  ```bash
+  npm run build
+  npx wrangler pages deploy dist --branch master --project-name courseviewer-cf-pages --commit-dirty=true
+  ```
 
 ---
 
-## 6. Classroom Iframe Player
-**Endpoint:** /classroom  
-**Methods:** GET
+## 6. Common Issues & Troubleshooting
 
-This endpoint serves the standalone Cloudflare Pages interactive player for a classroom session. It natively integrates with the /api/classroom-data resolver without requiring a separate json parameter.
-
-### Request Parameters (Query String)
-*   \subject\ (e.g., \io10p1\)
-*   \unit\ (e.g., \u1\)
-*   \lesson\ (e.g., \l3\)
-*   \id\ (e.g., \dtpxiWvtSV\)
-
-### Example \GET\ Request
-\\\ash
-curl "https://courseviewer.lms-yemen.com/classroom?subject=bio10p1&unit=u1&lesson=l3&id=dtpxiWvtSV"
-\\\
-
+| Error / Symptom | Cause | Solution |
+| :--- | :--- | :--- |
+| **HTTP 401 Unauthorized** | `REQUIRE_AUTH=true` is enabled but no JWT Bearer token was provided. | Provide `Authorization: Bearer <token>` or `?token=<token>`. |
+| **HTTP 503 AUTH_NOT_CONFIGURED** | `REQUIRE_AUTH=true` is set, but `JWT_SECRET` was not provided to Cloudflare Pages. | Run `npx wrangler pages secret put JWT_SECRET`. |
+| **Iframe Blocked in LMS Yemen** | `X-Frame-Options: SAMEORIGIN` was added. | Remove `X-Frame-Options`. Maintain CSP `frame-ancestors 'self' https://lms-yemen.com https://*.lms-yemen.com`. |
+| **Wrangler Deploy Upload Stalls** | Source map `.map` files in `dist/`. | Verify `sourcemap: false` in `vite.config.ts` to keep the production bundle fast and lightweight (~345 files). |
+| **Missing Textbook Page Offline** | Requested a non-standard page resolution (e.g. 600px or 1200px). | The offline system exclusively caches 900px WebP images (`page-{N}-w900.webp`). Ensure all page requests target `w900.webp`. |
