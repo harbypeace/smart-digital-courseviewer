@@ -435,6 +435,23 @@ export async function loadUniversalFromClassId(
   throw new Error(`Classroom "${cleanId}" could not be found.`);
 }
 
+import { checkLocalClassroom } from './storage/offline-resolver';
+
+export async function loadUniversalFromLocal(
+  subject?: string,
+  unit?: string,
+  lesson?: string,
+  classroomId?: string,
+): Promise<ClassroomData | null> {
+  try {
+    const res = await checkLocalClassroom(subject, unit, lesson, classroomId);
+    return res ? res.data : null;
+  } catch (err) {
+    console.warn('loadUniversalFromLocal failed:', err);
+    return null;
+  }
+}
+
 export function revokeUniversalUrls(data: ClassroomData): void {
   const urls = new Set<string>();
   const collect = (u: string | undefined) => {

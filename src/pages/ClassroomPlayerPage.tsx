@@ -38,7 +38,15 @@ import {
   Bot,
   Zap,
   Cpu,
+  Download,
+  HardDrive,
+  CheckCircle2,
+  Trash2,
+  Database,
+  ShieldCheck,
 } from 'lucide-react';
+import { checkLocalClassroom, isClassroomStoredLocally } from '../lib/storage/offline-resolver';
+import { useDownloadManager } from '../hooks/useDownloadManager';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -316,6 +324,16 @@ export function ClassroomPlayerPage() {
   const [scriptSearch, setScriptSearch] = useState('');
   const [copiedScript, setCopiedScript] = useState(false);
 
+  // Offline Playback & Download Manager State
+  const [isOfflinePlaying, setIsOfflinePlaying] = useState<boolean>(false);
+  const [showDownloadDrawer, setShowDownloadDrawer] = useState<boolean>(false);
+  const [isCurrentLessonDownloaded, setIsCurrentLessonDownloaded] = useState<boolean>(false);
+  const [optIncludeClassroom, setOptIncludeClassroom] = useState<boolean>(true);
+  const [optIncludePages, setOptIncludePages] = useState<boolean>(true);
+  const [pagesDownloadProgress, setPagesDownloadProgress] = useState<{ current: number; total: number } | null>(null);
+  const [hasPagesCached, setHasPagesCached] = useState<boolean>(false);
+  const downloadManager = useDownloadManager();
+
   // Mobile responsiveness & 3-second script auto-hide
   const [isMobile, setIsMobile] = useState(() => (typeof window !== 'undefined' ? window.innerWidth < 768 : false));
   const scriptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -588,6 +606,22 @@ export function ClassroomPlayerPage() {
     };
 
     try {
+      // 0. Check client device storage first (Instant offline-first resolution)
+      if (subject || classId) {
+        try {
+          const localRes = await checkLocalClassroom(subject, unit, lesson, classId);
+          if (localRes && isCurrentLoad()) {
+            setIsOfflinePlaying(true);
+            setLoadingMsg('جاري تشغيل الدرس من الذاكرة المحلية (Offline Cache)...');
+            await setupClassroomData(localRes.data, subject, unit, lesson, classId, zipUrl || undefined);
+            return;
+          }
+        } catch (localErr) {
+          console.warn('Local storage check bypassed:', localErr);
+        }
+      }
+      setIsOfflinePlaying(false);
+
       // 1. If explicit ZIP URL provided (Progressive Streaming)
       if (zipUrl) {
         setLoadingMsg('جاري تهيئة البث المباشر لحزمة الدرس (ZIP Streaming)...');
@@ -683,6 +717,17 @@ export function ClassroomPlayerPage() {
       if (dataRef.current) revokeUniversalUrls(dataRef.current);
     };
   }, [loadClassroom]);
+
+  useEffect(() => {
+    if (subjectCode && classroomId) {
+      downloadManager.checkIsDownloaded(subjectCode, unitCode, lessonCode, classroomId)
+        .then(setIsCurrentLessonDownloaded)
+        .catch(() => {});
+      downloadManager.checkPagesStatus(subjectCode, unitCode, lessonCode, 1, 10)
+        .then((s) => setHasPagesCached(s.cachedPages.length > 0))
+        .catch(() => {});
+    }
+  }, [subjectCode, unitCode, lessonCode, classroomId, downloadManager.tasks]);
 
   // Handle voice source switch
   const switchVoiceSource = (newSource: 'tts' | 'original' | 'custom') => {
@@ -1456,6 +1501,34 @@ export function ClassroomPlayerPage() {
             {showScriptPanel ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeftOpen className="w-4 h-4" />}
           </button>
 
+          {/* Offline Playback Badge */}
+          {isOfflinePlaying && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-950/80 border border-emerald-500/40 text-[11px] font-black text-emerald-300 shadow-sm animate-in fade-in" title="يتم تشغيل هذا الدرس من الذاكرة المحلية لجهازك">
+              <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">محلي (أوفلاين)</span>
+            </div>
+          )}
+
+          {/* Download Manager Modal Trigger */}
+          <button
+            onClick={() => setShowDownloadDrawer(true)}
+            className={`p-2 rounded-xl border transition relative ${
+              showDownloadDrawer
+                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50'
+                : downloadManager.isDownloading
+                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 animate-pulse'
+                : isCurrentLessonDownloaded
+                ? 'bg-emerald-950 text-emerald-300 border-emerald-700/60'
+                : 'bg-slate-800 text-slate-400 hover:text-white border-slate-700'
+            }`}
+            title="مدير التنزيل والتشغيل بدون إنترنت"
+          >
+            <Download className="w-4 h-4" />
+            {downloadManager.isDownloading && (
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-amber-400 ring-2 ring-slate-950 animate-ping" />
+            )}
+          </button>
+
           {/* Reload */}
           <button
             onClick={loadClassroom}
@@ -1763,6 +1836,352 @@ export function ClassroomPlayerPage() {
                   <span>تطبيق وتحديث الصوت</span>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Offline Download Manager Modal / Drawer ── */}
+      {showDownloadDrawer && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="w-full max-w-xl max-h-[90vh] bg-slate-900 border border-slate-800 rounded-3xl flex flex-col overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/80">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center">
+                  <Download className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-white">مدير التنزيلات والتشغيل بدون إنترنت</h3>
+                  <p className="text-[11px] text-slate-400">حفظ الدروس في ذاكرة الجهاز للوصول الفوري بدون شبكة</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowDownloadDrawer(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-5 custom-scrollbar">
+              {/* Current Lesson Status Card */}
+              <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-400">الدرس الحالي</span>
+                  <div className="flex items-center gap-1.5 font-mono text-[11px] text-cyan-400 bg-cyan-950/60 px-2 py-0.5 rounded-lg border border-cyan-800/40">
+                    <span>{subjectCode}</span>
+                    <span>/</span>
+                    <span>{cleanUnitCode(unitCode)}</span>
+                    <span>/</span>
+                    <span>{cleanLessonCode(lessonCode)}</span>
+                  </div>
+                </div>
+
+                <h4 className="text-sm font-black text-white">{data?.stage?.name || classroomId || 'الدرس التفاعلي'}</h4>
+
+                {/* Selective Options Header */}
+                <div className="text-xs font-bold text-slate-400 pt-1">
+                  حدد العناصر المراد تنزيلها (الافتراضي تنزيل الكل):
+                </div>
+
+                {/* Option 1: Classroom */}
+                <div className={`p-3 rounded-xl border transition-all ${
+                  optIncludeClassroom
+                    ? 'bg-slate-900/90 border-cyan-500/40 ring-1 ring-cyan-500/20'
+                    : 'bg-slate-900/40 border-slate-800 text-slate-500'
+                }`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <label className="flex items-start gap-2.5 cursor-pointer flex-1">
+                      <input
+                        type="checkbox"
+                        checked={optIncludeClassroom}
+                        onChange={(e) => setOptIncludeClassroom(e.target.checked)}
+                        className="mt-0.5 w-4 h-4 rounded border-slate-700 bg-slate-800 text-cyan-500 focus:ring-cyan-500 cursor-pointer"
+                      />
+                      <div>
+                        <div className="text-xs font-black text-white">الغرفة الصفية التفاعلية للدرس</div>
+                        <p className="text-[11px] text-slate-400 mt-0.5">الشرائح التفاعلية، الألواح البيضاء، وأصوات المعلم الذكي (TTS)</p>
+                      </div>
+                    </label>
+
+                    {isCurrentLessonDownloaded && (
+                      <div className="flex flex-col items-end gap-1 shrink-0">
+                        <span className="text-emerald-400 font-bold text-[11px] flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>محفوظة</span>
+                        </span>
+                        <button
+                          onClick={async () => {
+                            await downloadManager.deleteLesson(subjectCode, unitCode, lessonCode, classroomId);
+                            setIsCurrentLessonDownloaded(false);
+                          }}
+                          className="px-2 py-0.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-[10px] font-bold border border-rose-500/30 transition flex items-center gap-1"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>حذف الغرفة</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Option 2: 900px WebP Pages */}
+                <div className={`p-3 rounded-xl border transition-all ${
+                  optIncludePages
+                    ? 'bg-slate-900/90 border-cyan-500/40 ring-1 ring-cyan-500/20'
+                    : 'bg-slate-900/40 border-slate-800 text-slate-500'
+                }`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <label className="flex items-start gap-2.5 cursor-pointer flex-1">
+                      <input
+                        type="checkbox"
+                        checked={optIncludePages}
+                        onChange={(e) => setOptIncludePages(e.target.checked)}
+                        className="mt-0.5 w-4 h-4 rounded border-slate-700 bg-slate-800 text-cyan-500 focus:ring-cyan-500 cursor-pointer"
+                      />
+                      <div>
+                        <div className="text-xs font-black text-white flex items-center gap-1.5">
+                          <span>صفحات الكتاب المطبوع (دقة 900px WebP)</span>
+                          <span className="text-[10px] px-1 py-0.2 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 font-mono">900px</span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-0.5">تنزيل صور الكتاب الممسوحة بدقة 900px فقط لتوفير المساحة</p>
+                      </div>
+                    </label>
+
+                    {hasPagesCached && (
+                      <div className="flex flex-col items-end gap-1 shrink-0">
+                        <span className="text-emerald-400 font-bold text-[11px] flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>محفوظة</span>
+                        </span>
+                        <button
+                          onClick={async () => {
+                            await downloadManager.deletePagesOnly(subjectCode, unitCode, lessonCode, 1, 10);
+                            setHasPagesCached(false);
+                          }}
+                          className="px-2 py-0.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-[10px] font-bold border border-rose-500/30 transition flex items-center gap-1"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>حذف الصفحات</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* State: Downloading Classroom */}
+                {downloadManager.activeTask?.taskId.includes(classroomId) && (
+                  <div className="space-y-2 pt-1">
+                    <div className="flex items-center justify-between text-xs font-bold">
+                      <span className="text-amber-300 flex items-center gap-1.5">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>جاري تنزيل الغرفة الصفية...</span>
+                      </span>
+                      <span className="text-amber-400 font-mono">{downloadManager.activeTask.progress}%</span>
+                    </div>
+                    <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-amber-500 to-cyan-400 transition-all duration-300 rounded-full"
+                        style={{ width: `${downloadManager.activeTask.progress}%` }}
+                      />
+                    </div>
+                    <button
+                      onClick={() => downloadManager.cancelTask(downloadManager.activeTask!.taskId)}
+                      className="text-xs text-rose-400 hover:text-rose-300 font-bold transition"
+                    >
+                      إلغاء التنزيل
+                    </button>
+                  </div>
+                )}
+
+                {/* State: Downloading Pages */}
+                {pagesDownloadProgress && (
+                  <div className="space-y-2 pt-1">
+                    <div className="flex items-center justify-between text-xs font-bold">
+                      <span className="text-cyan-300 flex items-center gap-1.5">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>جاري تنزيل صفحات الكتاب (900px): ص {pagesDownloadProgress.current} من {pagesDownloadProgress.total}...</span>
+                      </span>
+                      <span className="text-cyan-400 font-mono">
+                        {Math.round((pagesDownloadProgress.current / pagesDownloadProgress.total) * 100)}%
+                      </span>
+                    </div>
+                    <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden">
+                      <div
+                        className="h-full bg-cyan-400 transition-all duration-200 rounded-full"
+                        style={{ width: `${(pagesDownloadProgress.current / pagesDownloadProgress.total) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Action Download Button */}
+                <div className="pt-2">
+                  <button
+                    onClick={async () => {
+                      if (optIncludeClassroom && !isCurrentLessonDownloaded) {
+                        await downloadManager.downloadLesson({
+                          subject: subjectCode,
+                          unit: unitCode,
+                          lesson: lessonCode,
+                          classroomId,
+                          title: data?.stage?.name,
+                          zipUrl: currentZipUrl,
+                        });
+                      }
+                      if (optIncludePages) {
+                        setPagesDownloadProgress({ current: 0, total: 10 });
+                        await downloadManager.downloadLessonPages(
+                          subjectCode,
+                          unitCode,
+                          lessonCode,
+                          1,
+                          10,
+                          (curr, tot) => setPagesDownloadProgress({ current: curr, total: tot })
+                        );
+                        setPagesDownloadProgress(null);
+                        setHasPagesCached(true);
+                      }
+                    }}
+                    disabled={
+                      (!optIncludeClassroom && !optIncludePages) ||
+                      downloadManager.isDownloading ||
+                      Boolean(pagesDownloadProgress)
+                    }
+                    className="w-full py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black text-xs shadow-lg shadow-cyan-500/20 transition flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    {downloadManager.isDownloading || pagesDownloadProgress ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>جاري التنزيل...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-4 h-4" />
+                        <span>
+                          {optIncludeClassroom && optIncludePages
+                            ? 'تنزيل الكل للتشغيل بدون إنترنت'
+                            : optIncludeClassroom
+                            ? 'تنزيل الغرفة الصفية فقط'
+                            : 'تنزيل صفحات الكتاب فقط (900px)'}
+                        </span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Device Storage Status Card */}
+              {downloadManager.storageStats && (
+                <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Database className="w-4 h-4 text-cyan-400" />
+                      <span className="text-xs font-black text-slate-200">سعة تخزين الجهاز المتاحة</span>
+                    </div>
+                    <span className="text-[11px] font-mono text-slate-400">
+                      {(downloadManager.storageStats.usedBytes / (1024 * 1024)).toFixed(1)} MB مستخدمة
+                    </span>
+                  </div>
+
+                  <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                    <div
+                      className="h-full bg-cyan-400 rounded-full"
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          Math.max(
+                            2,
+                            (downloadManager.storageStats.usedBytes / (downloadManager.storageStats.quotaBytes || 1)) * 100
+                          )
+                        )}%`,
+                      }}
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>
+                        {downloadManager.storageStats.isPersisted
+                          ? 'الحفظ الدائم مُفعل (لن يحذف المتصفح الملفات تلقائياً)'
+                          : 'الحفظ الافتراضي للمتصفح'}
+                      </span>
+                    </div>
+                    {!downloadManager.storageStats.isPersisted && (
+                      <button
+                        onClick={() => downloadManager.enablePersistentStorage()}
+                        className="text-[11px] text-cyan-400 hover:text-cyan-300 font-bold underline"
+                      >
+                        طلب حفظ دائم
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Stored Tasks / History List */}
+              {downloadManager.tasks.length > 0 && (
+                <div className="space-y-2">
+                  <h5 className="text-xs font-black text-slate-400">سجل التنزيلات والدروس المخزنة</h5>
+                  <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
+                    {downloadManager.tasks.map((task) => (
+                      <div
+                        key={task.taskId}
+                        className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80 flex items-center justify-between gap-3 text-xs"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="font-bold text-slate-200 truncate">{task.title}</div>
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            {task.taskId} • {(task.downloadedBytes / (1024 * 1024)).toFixed(1)} MB
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          {task.status === 'completed' && (
+                            <span className="px-2 py-0.5 rounded bg-emerald-950 text-emerald-400 border border-emerald-800 text-[10px] font-bold">
+                              جاهز
+                            </span>
+                          )}
+                          {task.status === 'downloading' && (
+                            <span className="px-2 py-0.5 rounded bg-amber-950 text-amber-400 border border-amber-800 text-[10px] font-bold flex items-center gap-1">
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                              <span>{task.progress}%</span>
+                            </span>
+                          )}
+                          {task.status === 'error' && (
+                            <span className="px-2 py-0.5 rounded bg-rose-950 text-rose-400 border border-rose-800 text-[10px] font-bold">
+                              فشل
+                            </span>
+                          )}
+                          <button
+                            onClick={() => downloadManager.deleteLesson(task.subject, task.unit, task.lesson, task.classroomId)}
+                            className="p-1 rounded text-slate-500 hover:text-rose-400 transition"
+                            title="حذف"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-slate-800 bg-slate-950/80 flex items-center justify-between">
+              <span className="text-[11px] text-slate-400">
+                يتم تخزين الدروس محلياً عبر IndexedDB و CacheStorage
+              </span>
+              <button
+                onClick={() => setShowDownloadDrawer(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition"
+              >
+                إغلاق
+              </button>
             </div>
           </div>
         </div>

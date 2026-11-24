@@ -13,7 +13,16 @@ import {
   Printer,
   ImageOff,
   X,
+  Download,
+  HardDrive,
+  CheckCircle2,
+  Trash2,
+  Database,
+  ShieldCheck,
+  Loader2,
 } from 'lucide-react';
+import { useDownloadManager } from '../hooks/useDownloadManager';
+import { getPageImageObjectUrl } from '../lib/storage/media-cache';
 import {
   cleanUnitCode,
   cleanLessonCode,
@@ -43,6 +52,36 @@ export function PrintedPagesViewer() {
   // Candidate index tracking for error fallbacks
   const [candidateIdx, setCandidateIdx] = useState<Record<number, number>>({});
   const [failedPages, setFailedPages] = useState<Record<number, boolean>>({});
+
+  // Offline Caching & Selective Download State
+  const [localPageUrls, setLocalPageUrls] = useState<Map<number, string>>(new Map());
+  const [isOfflinePlaying, setIsOfflinePlaying] = useState<boolean>(false);
+  const [showDownloadModal, setShowDownloadModal] = useState<boolean>(false);
+  const [optIncludePages, setOptIncludePages] = useState<boolean>(true);
+  const [optIncludeClassroom, setOptIncludeClassroom] = useState<boolean>(true);
+  const [pagesDownloadProgress, setPagesDownloadProgress] = useState<{ current: number; total: number } | null>(null);
+  const [isClassroomCached, setIsClassroomCached] = useState<boolean>(false);
+  const downloadManager = useDownloadManager();
+
+  // Mobile responsiveness, 3-second auto-hide & swipe navigation
+  const [isMobile, setIsMobile] = useState(() => (typeof window !== 'undefined' ? window.innerWidth < 768 : false));
+  const [toolbarVisible, setToolbarVisible] = useState<boolean>(true);
+  const toolbarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const touchStartXRef = useRef<number | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
+
+  const resetToolbarAutoHide = useCallback(() => {
+    if (toolbarTimerRef.current) {
+      clearTimeout(toolbarTimerRef.current);
+      toolbarTimerRef.current = null;
+    }
+    setToolbarVisible(true);
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      toolbarTimerRef.current = setTimeout(() => {
+        setToolbarVisible(false);
+      }, 3000);
+    }
+  }, []);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -179,7 +218,56 @@ export function PrintedPagesViewer() {
     }
   };
 
+  const refreshLocalPages = useCallback(async () => {
+    if (typeof window === 'undefined') return;
+    try {
+      const status = await downloadManager.checkPagesStatus(subject, unit, lesson, startPage, endPage);
+      const map = new Map<number, string>();
+      for (const p of status.cachedPages) {
+        const objUrl = await getPageImageObjectUrl(subject, unit, lesson, p);
+        if (objUrl) map.set(p, objUrl);
+      }
+      setLocalPageUrls(map);
+      setIsOfflinePlaying(status.isFullyCached);
+
+      const hasClassroom = await downloadManager.checkIsDownloaded(subject, unit, lesson, `${subject}_${unit}_${lesson}`);
+      setIsClassroomCached(hasClassroom);
+    } catch {}
+  }, [subject, unit, lesson, startPage, endPage, downloadManager]);
+
+  useEffect(() => {
+    refreshLocalPages();
+  }, [refreshLocalPages]);
+
+  // Touch Swipe Handlers for mobile page flipping
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      touchStartXRef.current = e.touches[0].clientX;
+      touchStartYRef.current = e.touches[0].clientY;
+    }
+    resetToolbarAutoHide();
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartXRef.current === null || touchStartYRef.current === null) return;
+    const diffX = e.changedTouches[0].clientX - touchStartXRef.current;
+    const diffY = e.changedTouches[0].clientY - touchStartYRef.current;
+    touchStartXRef.current = null;
+    touchStartYRef.current = null;
+
+    if (Math.abs(diffX) > 50 && Math.abs(diffX) > Math.abs(diffY)) {
+      if (diffX > 0) {
+        goToPrevPage();
+      } else {
+        goToNextPage();
+      }
+    }
+  };
+
   const getPageSrc = (pageNum: number, widthOverride?: 600 | 900 | 1200) => {
+    if (localPageUrls.has(pageNum)) {
+      return localPageUrls.get(pageNum)!;
+    }
     const candidates = generatePageImageCandidates(
       subject,
       unit,
@@ -197,11 +285,22 @@ export function PrintedPagesViewer() {
   return (
     <div
       ref={containerRef}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+      onPointerDown={resetToolbarAutoHide}
+      onScroll={resetToolbarAutoHide}
       className="flex flex-col h-screen w-full bg-slate-950 text-slate-100 select-none overflow-hidden relative"
       dir="rtl"
     >
       {/* ── Sleek Floating Toolbar (Glassmorphic pill at top-center with small icons) ── */}
-      <aside className="fixed top-3 sm:top-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 sm:gap-1.5 px-3 py-1.5 bg-slate-900/85 backdrop-blur-xl border border-slate-700/60 shadow-2xl rounded-2xl transition-all hover:bg-slate-900/95 max-w-[95vw] overflow-x-auto">
+      <aside
+        onPointerDown={resetToolbarAutoHide}
+        className={`fixed top-3 sm:top-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 sm:gap-1.5 px-3 py-1.5 bg-slate-900/85 backdrop-blur-xl border border-slate-700/60 shadow-2xl rounded-2xl transition-all duration-300 max-w-[95vw] overflow-x-auto ${
+          isMobile && !toolbarVisible
+            ? 'opacity-0 -translate-y-12 pointer-events-none'
+            : 'opacity-100 translate-y-0'
+        }`}
+      >
         {/* Layout Modes */}
         <div className="flex items-center gap-1">
           {/* Vertical Continuous Mode */}
@@ -320,6 +419,39 @@ export function PrintedPagesViewer() {
           title="ملء الشاشة (F)"
         >
           {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+        </button>
+
+        <div className="h-4 w-px bg-slate-700/70 mx-0.5"></div>
+
+        {/* Offline Badge */}
+        {isOfflinePlaying && (
+          <div
+            className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-950/80 border border-emerald-500/40 text-[10px] font-bold text-emerald-300 shrink-0"
+            title="يتم عرض جميع الصفحات من الذاكرة المحلية لجهازك بدون إنترنت"
+          >
+            <HardDrive className="w-3 h-3 text-emerald-400" />
+            <span className="hidden sm:inline">محلي</span>
+          </div>
+        )}
+
+        {/* Download Manager Trigger */}
+        <button
+          onClick={() => setShowDownloadModal(true)}
+          className={`p-1.5 rounded-lg transition shrink-0 relative ${
+            showDownloadModal
+              ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/50'
+              : pagesDownloadProgress || downloadManager.isDownloading
+              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse'
+              : isOfflinePlaying
+              ? 'bg-emerald-950 text-emerald-300 border border-emerald-700/60'
+              : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800'
+          }`}
+          title="مدير التنزيلات والتشغيل بدون إنترنت"
+        >
+          <Download className="w-3.5 h-3.5" />
+          {(pagesDownloadProgress || downloadManager.isDownloading) && (
+            <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-400 ring-2 ring-slate-950 animate-ping" />
+          )}
         </button>
       </aside>
 
@@ -529,6 +661,300 @@ export function PrintedPagesViewer() {
               style={{ transform: `scale(${lightboxZoom / 100})` }}
               onError={() => handleImageError(lightboxPage)}
             />
+          </div>
+        </div>
+      )}
+      {/* ── Selective Download Manager Modal ── */}
+      {showDownloadModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="w-full max-w-xl max-h-[90vh] bg-slate-900 border border-slate-800 rounded-3xl flex flex-col overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/80">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center">
+                  <Download className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-white">مدير التنزيلات والتشغيل بدون إنترنت</h3>
+                  <p className="text-[11px] text-slate-400">حفظ صفحات الكتاب المطبوع والغرفة الصفية على جهازك</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowDownloadModal(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-4 custom-scrollbar">
+              {/* Lesson Context Badge */}
+              <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-950/70 border border-slate-800">
+                <div className="flex items-center gap-2">
+                  <BookOpen className="w-4 h-4 text-cyan-400" />
+                  <span className="text-xs font-black text-white">
+                    {subject} · {cleanUnitCode(unit)} / {cleanLessonCode(lesson)}
+                  </span>
+                </div>
+                <span className="text-[11px] font-mono text-cyan-400 bg-cyan-950/60 px-2 py-0.5 rounded-lg border border-cyan-800/40">
+                  ص {startPage} إلى ص {endPage} ({totalPages} صفحة)
+                </span>
+              </div>
+
+              {/* Options Header */}
+              <div className="text-xs font-bold text-slate-400 pt-1">
+                حدد العناصر التي ترغب في حفظها على جهازك (الافتراضي تنزيل الكل):
+              </div>
+
+              {/* Option 1: 900px WebP Printed Pages */}
+              <div
+                className={`p-4 rounded-2xl border transition-all ${
+                  optIncludePages
+                    ? 'bg-slate-950/90 border-cyan-500/40 ring-1 ring-cyan-500/20'
+                    : 'bg-slate-950/40 border-slate-800 text-slate-500'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <label className="flex items-start gap-3 cursor-pointer flex-1">
+                    <input
+                      type="checkbox"
+                      checked={optIncludePages}
+                      onChange={(e) => setOptIncludePages(e.target.checked)}
+                      className="mt-1 w-4 h-4 rounded border-slate-700 bg-slate-800 text-cyan-500 focus:ring-cyan-500 cursor-pointer"
+                    />
+                    <div>
+                      <h4 className="text-xs font-black text-white flex items-center gap-2">
+                        <span>صفحات الكتاب المطبوع (دقة 900px WebP فقط)</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 font-mono">
+                          900px
+                        </span>
+                      </h4>
+                      <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                        تنزيل الصفحات من ص {startPage} إلى ص {endPage} بدقة 900px WebP المحسنة للسرعة وتوفير المساحة مع وضوح عالي.
+                      </p>
+                    </div>
+                  </label>
+
+                  {localPageUrls.size > 0 && (
+                    <div className="flex flex-col items-end gap-1.5 shrink-0">
+                      <span className="text-emerald-400 font-bold text-xs flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>محفوظة ({localPageUrls.size} ص)</span>
+                      </span>
+                      <button
+                        onClick={async () => {
+                          await downloadManager.deletePagesOnly(subject, unit, lesson, startPage, endPage);
+                          await refreshLocalPages();
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-[11px] font-bold transition flex items-center gap-1 border border-rose-500/30"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>حذف الصفحات</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Option 2: Interactive Classroom */}
+              <div
+                className={`p-4 rounded-2xl border transition-all ${
+                  optIncludeClassroom
+                    ? 'bg-slate-950/90 border-cyan-500/40 ring-1 ring-cyan-500/20'
+                    : 'bg-slate-950/40 border-slate-800 text-slate-500'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <label className="flex items-start gap-3 cursor-pointer flex-1">
+                    <input
+                      type="checkbox"
+                      checked={optIncludeClassroom}
+                      onChange={(e) => setOptIncludeClassroom(e.target.checked)}
+                      className="mt-1 w-4 h-4 rounded border-slate-700 bg-slate-800 text-cyan-500 focus:ring-cyan-500 cursor-pointer"
+                    />
+                    <div>
+                      <h4 className="text-xs font-black text-white">الغرفة الصفية التفاعلية للدرس (Classroom & Audio)</h4>
+                      <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                        تنزيل المشاهد التفاعلية، حوارات المعلم الذكي (TTS)، والرسوم التوضيحية للتشغيل الكامل بدون إنترنت.
+                      </p>
+                    </div>
+                  </label>
+
+                  {isClassroomCached && (
+                    <div className="flex flex-col items-end gap-1.5 shrink-0">
+                      <span className="text-emerald-400 font-bold text-xs flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>محفوظة محلياً</span>
+                      </span>
+                      <button
+                        onClick={async () => {
+                          await downloadManager.deleteLesson(subject, unit, lesson, `${subject}_${unit}_${lesson}`);
+                          await refreshLocalPages();
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-[11px] font-bold transition flex items-center gap-1 border border-rose-500/30"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>حذف الغرفة</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Progress Display */}
+              {pagesDownloadProgress && (
+                <div className="p-3.5 rounded-2xl bg-amber-950/40 border border-amber-800/60 space-y-2">
+                  <div className="flex items-center justify-between text-xs font-bold text-amber-300">
+                    <span className="flex items-center gap-1.5">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>جاري تنزيل صفحات الكتاب (900px WebP): ص {pagesDownloadProgress.current} من {pagesDownloadProgress.total}...</span>
+                    </span>
+                    <span className="font-mono">
+                      {Math.round((pagesDownloadProgress.current / pagesDownloadProgress.total) * 100)}%
+                    </span>
+                  </div>
+                  <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                    <div
+                      className="h-full bg-amber-400 transition-all duration-200 rounded-full"
+                      style={{
+                        width: `${(pagesDownloadProgress.current / pagesDownloadProgress.total) * 100}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {downloadManager.isDownloading && (
+                <div className="p-3.5 rounded-2xl bg-cyan-950/40 border border-cyan-800/60 space-y-2">
+                  <div className="flex items-center justify-between text-xs font-bold text-cyan-300">
+                    <span className="flex items-center gap-1.5">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>جاري تنزيل وحفظ الغرفة الصفية...</span>
+                    </span>
+                    <span className="font-mono">{downloadManager.activeTask?.progress || 0}%</span>
+                  </div>
+                  <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                    <div
+                      className="h-full bg-cyan-400 transition-all duration-200 rounded-full"
+                      style={{ width: `${downloadManager.activeTask?.progress || 0}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Storage Stats Bar */}
+              {downloadManager.storageStats && (
+                <div className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800 space-y-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Database className="w-3.5 h-3.5 text-cyan-400" />
+                      <span className="font-bold text-slate-300">المساحة المحلية المستخدمة</span>
+                    </div>
+                    <span className="font-mono text-slate-400 text-[11px]">
+                      {(downloadManager.storageStats.usedBytes / (1024 * 1024)).toFixed(1)} MB
+                    </span>
+                  </div>
+                  <div className="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                    <div
+                      className="h-full bg-cyan-400 rounded-full"
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          Math.max(
+                            2,
+                            (downloadManager.storageStats.usedBytes / (downloadManager.storageStats.quotaBytes || 1)) * 100
+                          )
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between pt-0.5 text-[11px] text-slate-400">
+                    <span className="flex items-center gap-1">
+                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>{downloadManager.storageStats.isPersisted ? 'الحفظ الدائم مُفعل' : 'الحفظ الافتراضي'}</span>
+                    </span>
+                    {!downloadManager.storageStats.isPersisted && (
+                      <button
+                        onClick={() => downloadManager.enablePersistentStorage()}
+                        className="text-cyan-400 hover:text-cyan-300 font-bold underline"
+                      >
+                        طلب حفظ دائم
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-slate-800 bg-slate-950/80 flex items-center justify-between">
+              <span className="text-[11px] text-slate-400">
+                {optIncludePages && optIncludeClassroom
+                  ? 'سيتم تنزيل الكل (الصفحات 900px + الغرفة الصفية)'
+                  : optIncludePages
+                  ? 'سيتم تنزيل صفحات الكتاب المطبوع فقط (900px)'
+                  : optIncludeClassroom
+                  ? 'سيتم تنزيل الغرفة الصفية التفاعلية فقط'
+                  : 'يرجى تحديد عنصر واحد على الأقل'}
+              </span>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowDownloadModal(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition"
+                >
+                  إغلاق
+                </button>
+                <button
+                  disabled={
+                    (!optIncludePages && !optIncludeClassroom) ||
+                    Boolean(pagesDownloadProgress) ||
+                    downloadManager.isDownloading
+                  }
+                  onClick={async () => {
+                    if (optIncludePages) {
+                      setPagesDownloadProgress({ current: 0, total: totalPages });
+                      await downloadManager.downloadLessonPages(
+                        subject,
+                        unit,
+                        lesson,
+                        startPage,
+                        endPage,
+                        (curr, tot) => setPagesDownloadProgress({ current: curr, total: tot })
+                      );
+                      setPagesDownloadProgress(null);
+                      await refreshLocalPages();
+                    }
+                    if (optIncludeClassroom) {
+                      await downloadManager.downloadLesson({
+                        subject,
+                        unit,
+                        lesson,
+                        classroomId: `${subject}_${unit}_${lesson}`,
+                        title: `درس ${lesson} (${subject})`,
+                      });
+                      await refreshLocalPages();
+                    }
+                  }}
+                  className="px-5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-black shadow-lg shadow-cyan-500/20 transition flex items-center gap-2 disabled:opacity-50"
+                >
+                  {pagesDownloadProgress || downloadManager.isDownloading ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>جاري التنزيل...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-3.5 h-3.5" />
+                      <span>
+                        {optIncludePages && optIncludeClassroom ? 'تنزيل الكل الآن' : 'تنزيل المحدد الآن'}
+                      </span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
