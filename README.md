@@ -36,7 +36,6 @@ cloudflarepages/
 │   ├── pages/
 │   │   ├── PrintedPagesViewer.tsx# Redesigned Printed Pages Book Reader
 │   │   ├── ClassroomPlayerPage.tsx# OpenMAIC Classroom Player
-│   │   ├── HtmlLessonViewer.tsx  # HTML Lesson Viewer
 │   │   └── TestShowcase.tsx      # Test & Diagnostic Dashboard
 │   ├── lib/                      # Utilities & universal loaders
 │   └── index.css                 # Tailwind CSS styles
